@@ -1,0 +1,10 @@
+.git
+.cursor
+**/__pycache__
+**/*.pyc
+**/*.pyo
+**/*.log
+frontend/node_modules
+backend/data
+.env
+frontend/.env
