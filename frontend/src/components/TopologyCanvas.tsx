@@ -4,10 +4,12 @@ import {
   Background,
   Controls,
   MiniMap,
+  Panel,
   Node,
   Edge,
   useNodesState,
   useEdgesState,
+  useReactFlow,
   NodeMouseHandler,
   EdgeMouseHandler,
 } from "@xyflow/react";
@@ -25,6 +27,41 @@ interface Props {
   onNodeSelect: (node: TopologyNode | undefined) => void;
   onLinkSelect: (link: TopologyLink | undefined) => void;
   onRemediationTrigger: (action: RemediationAction) => void;
+}
+
+// Rendered inside <ReactFlow> so useReactFlow() is available.
+// Calls fitView whenever the node count changes (i.e. after a topology load).
+function FlowControls({ nodeCount }: { nodeCount: number }) {
+  const { fitView } = useReactFlow();
+  const prevCountRef = React.useRef(0);
+
+  React.useEffect(() => {
+    if (nodeCount > 0 && nodeCount !== prevCountRef.current) {
+      prevCountRef.current = nodeCount;
+      // rAF lets React Flow finish positioning nodes before we fit
+      requestAnimationFrame(() => fitView({ padding: 0.15, duration: 400 }));
+    }
+  }, [nodeCount, fitView]);
+
+  return (
+    <Panel position="top-left">
+      <button
+        onClick={() => fitView({ padding: 0.2, duration: 400 })}
+        style={{
+          background: "#0d1f38",
+          color: "#7ab8f5",
+          border: "1px solid #2e5080",
+          borderRadius: 5,
+          padding: "4px 10px",
+          fontSize: 11,
+          fontWeight: 600,
+          cursor: "pointer",
+        }}
+      >
+        Reset view
+      </button>
+    </Panel>
+  );
 }
 
 const VIEW_LABELS: Record<ViewMode, string> = {
@@ -165,12 +202,11 @@ export function TopologyCanvas({
         onEdgesChange={onEdgesChange}
         onNodeClick={handleNodeClick}
         onEdgeClick={handleEdgeClick}
-        fitView
-        fitViewOptions={{ padding: 0.15 }}
         minZoom={0.15}
         maxZoom={2}
         proOptions={{ hideAttribution: false }}
       >
+        <FlowControls nodeCount={nodes.length} />
         <MiniMap
           style={{ background: "#081320" }}
           maskColor="rgba(0,0,0,0.6)"

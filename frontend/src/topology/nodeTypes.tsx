@@ -282,6 +282,40 @@ export function ClientNode({ data }: NodeProps) {
   );
 }
 
+// ── Port node (switch port with connected peer info) ─────────────────────────
+export function PortNode({ data }: NodeProps) {
+  const d = data as NodeData;
+  const w = d.width ?? 150;
+  const h = d.height ?? 44;
+  return (
+    <div
+      style={{
+        width: w,
+        height: h,
+        background: "#081828",
+        border: "1px solid #1e4060",
+        borderRadius: 6,
+        display: "flex",
+        alignItems: "center",
+        gap: 6,
+        color: "#7ab8d8",
+        fontSize: 10,
+        fontWeight: 500,
+        padding: "0 8px",
+        cursor: "default",
+      }}
+    >
+      <span style={{ fontSize: 12, flexShrink: 0 }}>🔌</span>
+      <span
+        style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}
+        title={d.label}
+      >
+        {d.label}
+      </span>
+    </div>
+  );
+}
+
 export const nodeTypes = {
   wanNode: WanNode,
   firewallNode: FirewallNode,
@@ -289,4 +323,5 @@ export const nodeTypes = {
   apNode: ApNode,
   clientGroupNode: ClientGroupNode,
   clientNode: ClientNode,
+  portNode: PortNode,
 };

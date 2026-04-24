@@ -8,6 +8,7 @@ const NODE_WIDTH: Record<string, number> = {
   FIREWALL: 160,
   CORE_SWITCH: 160,
   ACCESS_SWITCH: 150,
+  PORT: 150,
   ACCESS_POINT: 90,
   CLIENT: 130,
   UNKNOWN: 130,
@@ -18,6 +19,7 @@ const NODE_HEIGHT: Record<string, number> = {
   FIREWALL: 56,
   CORE_SWITCH: 56,
   ACCESS_SWITCH: 56,
+  PORT: 44,
   ACCESS_POINT: 90, // circle
   CLIENT: 48,
   UNKNOWN: 48,
@@ -108,6 +110,26 @@ export function computeLayout(graph: HierarchyGraph): { nodes: Node[]; edges: Ed
   const accessPositions = accessLayerPositions(graph.nodes);
   for (const [id, pos] of accessPositions) posMap.set(id, pos);
 
+  // PORT layer: group ports under their parent switch/device.
+  // groupParentId stores the parent node id for port nodes.
+  const portNodes = graph.nodes.filter((n) => n.layer === "PORT");
+  const portsByParent = new Map<string, typeof portNodes>();
+  for (const pn of portNodes) {
+    const parentId = pn.groupParentId ?? "";
+    if (!portsByParent.has(parentId)) portsByParent.set(parentId, []);
+    portsByParent.get(parentId)!.push(pn);
+  }
+  for (const [parentId, ports] of portsByParent) {
+    const parentPos = posMap.get(parentId);
+    const parentNode = graph.nodes.find((n) => n.id === parentId);
+    const parentW = NODE_WIDTH[parentNode?.layer ?? "ACCESS_SWITCH"] ?? 150;
+    const centerX = parentPos ? parentPos.x + parentW / 2 : CANVAS_CENTER_X;
+    const portW = NODE_WIDTH["PORT"];
+    const totalW = ports.length * portW + Math.max(0, ports.length - 1) * H_GAP;
+    const startX = centerX - totalW / 2;
+    ports.forEach((pn, i) => posMap.set(pn.id, { x: startX + i * (portW + H_GAP), y: LAYER_Y["PORT"] }));
+  }
+
   // Build React Flow nodes
   const rfNodes: Node[] = graph.nodes.map((n) => {
     const pos = posMap.get(n.id) ?? { x: 100, y: 100 };
@@ -121,6 +143,7 @@ export function computeLayout(graph: HierarchyGraph): { nodes: Node[]; edges: Ed
     else if (n.isGroup) rfType = "clientGroupNode";
     else if (n.layer === "CLIENT") rfType = "clientNode";
     else if (n.layer === "WAN") rfType = "wanNode";
+    else if (n.layer === "PORT") rfType = "portNode";
 
     return {
       id: n.id,

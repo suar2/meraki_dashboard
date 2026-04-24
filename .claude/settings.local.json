@@ -1,0 +1,29 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python3 run_dashboard.py)",
+      "Read(//home/suar/.cache/merak_dashboard/**)",
+      "Bash(~/.cache/merak_dashboard/venv-b7fd9d42/bin/python -c \"import uvicorn; print\\('uvicorn ok'\\)\" 2>&1)",
+      "Bash(~/.cache/merak_dashboard/venv-b7fd9d42/bin/pip install:*)",
+      "Bash(python3:*)",
+      "Bash(echo \"Exit: $?\")",
+      "Read(//tmp/**)",
+      "Bash(npm --version)",
+      "Bash(npm install:*)",
+      "Bash(timeout 10 npm run dev)",
+      "Bash(curl -s http://localhost:8000/health)",
+      "Bash(curl -s http://localhost:3000)",
+      "Bash(curl -s http://10.1.1.12:8800/health)",
+      "Bash(node -e \"const r=require\\(''''/mnt/nas/Backup/Programming/Merak_Dashboard/frontend/node_modules/@vitejs/plugin-react/dist/index.js''''\\); console.log\\(''''ok''''\\)\")",
+      "Bash(node -e \"require\\(''/mnt/nas/Backup/Programming/Merak_Dashboard/frontend/node_modules/@vitejs/plugin-react/dist/index.js''\\)\")",
+      "Bash(curl -si http://10.1.1.12:3300)",
+      "Bash(ls /mnt/nas/Backup/Programming/Merak_Dashboard/frontend/node_modules/@xyflow/react/dist/umd/*.js)",
+      "Bash(npm run:*)",
+      "Bash(./node_modules/.bin/tsc --noEmit)",
+      "Bash(sudo npm:*)",
+      "Bash(mount)",
+      "Bash(/tmp/merak_pkg/node_modules/.bin/tsc \\\\\n  --noEmit \\\\\n  --strict \\\\\n  --target ES2020 \\\\\n  --lib ES2020,DOM \\\\\n  --module ESNext \\\\\n  --moduleResolution Bundler \\\\\n  --jsx react-jsx \\\\\n  --skipLibCheck true \\\\\n  --resolveJsonModule \\\\\n  /mnt/nas/Backup/Programming/Merak_Dashboard/frontend/src/main.tsx \\\\\n  /mnt/nas/Backup/Programming/Merak_Dashboard/frontend/src/topology/classify.ts \\\\\n  /mnt/nas/Backup/Programming/Merak_Dashboard/frontend/src/topology/buildHierarchy.ts \\\\\n  /mnt/nas/Backup/Programming/Merak_Dashboard/frontend/src/topology/layout.ts \\\\\n  /mnt/nas/Backup/Programming/Merak_Dashboard/frontend/src/topology/nodeTypes.tsx \\\\\n  /mnt/nas/Backup/Programming/Merak_Dashboard/frontend/src/topology/useTopologyLayout.ts \\\\\n  /mnt/nas/Backup/Programming/Merak_Dashboard/frontend/src/components/TopologyCanvas.tsx \\\\\n  2>&1)",
+      "Bash(/tmp/merak_pkg/node_modules/.bin/tsc \\\\\n  --noEmit --strict --target ES2020 --lib ES2020,DOM \\\\\n  --module ESNext --moduleResolution Bundler --jsx react-jsx \\\\\n  --skipLibCheck true --resolveJsonModule \\\\\n  /mnt/nas/Backup/Programming/Merak_Dashboard/frontend/src/main.tsx \\\\\n  /mnt/nas/Backup/Programming/Merak_Dashboard/frontend/src/topology/classify.ts \\\\\n  /mnt/nas/Backup/Programming/Merak_Dashboard/frontend/src/topology/buildHierarchy.ts \\\\\n  /mnt/nas/Backup/Programming/Merak_Dashboard/frontend/src/topology/layout.ts \\\\\n  /mnt/nas/Backup/Programming/Merak_Dashboard/frontend/src/topology/nodeTypes.tsx \\\\\n  /mnt/nas/Backup/Programming/Merak_Dashboard/frontend/src/topology/useTopologyLayout.ts \\\\\n  /mnt/nas/Backup/Programming/Merak_Dashboard/frontend/src/components/TopologyCanvas.tsx \\\\\n  /mnt/nas/Backup/Programming/Merak_Dashboard/frontend/src/components/DetailsPanel.tsx \\\\\n  2>&1)"
+    ]
+  }
+}

@@ -5,6 +5,7 @@ export type NodeLayer =
   | "FIREWALL"
   | "CORE_SWITCH"
   | "ACCESS_SWITCH"
+  | "PORT"
   | "ACCESS_POINT"
   | "CLIENT"
   | "UNKNOWN";
@@ -18,6 +19,12 @@ export function classifyNode(
   const model = String(
     node.metadata?.model || node.metadata?.productType || ""
   ).toLowerCase();
+
+  // CLIENT must be checked before ACCESS_POINT: wireless clients have
+  // subtype="wireless" but type="client" and must not be classified as APs.
+  if (node.type === "client" || sub === "client") {
+    return "CLIENT";
+  }
 
   // WAN: unmanaged nodes that look like internet gateways
   if (
@@ -41,17 +48,17 @@ export function classifyNode(
     return "FIREWALL";
   }
 
-  // Access Point (MR series)
+  // Access Point (MR series) — "wireless" subtype only for Meraki APs, not clients
   if (
     sub === "access_point" ||
-    sub === "wireless" ||
+    (sub === "wireless" && node.type !== "client") ||
     model.startsWith("mr") ||
     sub === "ap"
   ) {
     return "ACCESS_POINT";
   }
 
-  // Switch (MS series)
+  // Switch (MS / GS series)
   if (
     sub === "switch" ||
     sub === "core_switch" ||
@@ -62,21 +69,39 @@ export function classifyNode(
     return coreIds.has(node.id) ? "CORE_SWITCH" : "ACCESS_SWITCH";
   }
 
-  // Client
-  if (sub === "client" || node.type === "client") {
-    return "CLIENT";
-  }
-
   return "UNKNOWN";
 }
 
+/** Skip labels that look like raw Meraki derivedIds (long digit strings). */
+function looksLikeDerivedId(s: string): boolean {
+  return /^\d{10,}$/.test(s);
+}
+
 export function resolveDisplayLabel(node: TopologyNode): string {
+  // For clients: prefer description → dhcpHostname → mdnsName → user
+  if (node.type === "client" || (node.subtype || "").toLowerCase() === "client") {
+    const name =
+      String(node.metadata?.description || "").trim() ||
+      String(node.metadata?.dhcpHostname || "").trim() ||
+      String(node.metadata?.mdnsName || "").trim() ||
+      String(node.metadata?.netbiosName || "").trim() ||
+      String(node.metadata?.user || "").trim();
+    if (name && name !== "Unknown") return name;
+    // Fall through to generic resolution below
+  }
+
   const hostname = String(
     node.metadata?.hostname || node.metadata?.dhcpHostname || ""
   ).trim();
-  if (hostname && hostname !== "Unknown" && hostname !== "") return hostname;
+  if (hostname && hostname !== "Unknown") return hostname;
 
-  if (node.label && !node.label.match(/^[0-9a-f:]{17}$/i) && !node.label.match(/^\d+\.\d+\.\d+\.\d+$/)) {
+  // Use node.label if it's not a raw derivedId, MAC, or bare IP
+  if (
+    node.label &&
+    !looksLikeDerivedId(node.label) &&
+    !node.label.match(/^[0-9a-f:]{17}$/i) &&
+    !node.label.match(/^\d+\.\d+\.\d+\.\d+$/)
+  ) {
     return node.label;
   }
 
@@ -85,8 +110,16 @@ export function resolveDisplayLabel(node: TopologyNode): string {
   if (os) return `${os} Device`;
   if (mfr) return `${mfr} Device`;
 
+  // Last resorts: IP or MAC
+  const ip = String(node.metadata?.ip || node.metadata?.lanIp || "").trim();
+  if (ip) return ip;
+  const mac = String(node.metadata?.mac || node.metadata?.macAddress || "").trim();
+  if (mac) return mac;
+
   const sub = (node.subtype || "").toLowerCase();
   if (sub === "client") return "Unknown Client";
+  if (sub === "access_point") return "Unknown AP";
+  if (sub === "switch") return "Unknown Switch";
 
   return node.label || "Unknown Device";
 }
@@ -96,6 +129,7 @@ export const LAYER_ORDER: NodeLayer[] = [
   "FIREWALL",
   "CORE_SWITCH",
   "ACCESS_SWITCH",
+  "PORT",
   "ACCESS_POINT",
   "CLIENT",
   "UNKNOWN",
@@ -103,10 +137,11 @@ export const LAYER_ORDER: NodeLayer[] = [
 
 export const LAYER_Y: Record<NodeLayer, number> = {
   WAN: 60,
-  FIREWALL: 210,
-  CORE_SWITCH: 370,
-  ACCESS_SWITCH: 530,
-  ACCESS_POINT: 530,
-  CLIENT: 700,
-  UNKNOWN: 700,
+  FIREWALL: 220,
+  CORE_SWITCH: 390,
+  ACCESS_SWITCH: 560,
+  PORT: 700,
+  ACCESS_POINT: 860,
+  CLIENT: 1040,
+  UNKNOWN: 860,
 };

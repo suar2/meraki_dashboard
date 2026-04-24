@@ -1,8 +1,7 @@
-import { Node } from "@xyflow/react";
 import { TopologyLink, TopologyNode } from "../types/topology";
 
 interface Props {
-  node?: Node<any>;
+  node?: TopologyNode;
   link?: TopologyLink;
   allNodes: TopologyNode[];
   allLinks: TopologyLink[];
@@ -14,22 +13,28 @@ export function DetailsPanel({ node, link }: Props) {
   }
 
   if (node) {
-    const details = (node.data?.details || {}) as Record<string, unknown>;
-    const nodeType = String(node.data?.nodeType || "unknownDevice");
+    const serial = String(node.metadata?.serial || node.id);
+    const model = String(node.metadata?.model || node.metadata?.productType || "—");
+    const lanIp = String(node.metadata?.lanIp || node.metadata?.ip || "—");
+    const mac = String(node.metadata?.mac || node.metadata?.macAddress || "—");
     return (
       <aside className="panel">
-        <h3>{String(node.data?.label || node.id)}</h3>
-        <p className="muted">{nodeType}</p>
+        <h3>{node.label}</h3>
+        <p className="muted">{node.subtype} · {node.managed ? "managed" : "unmanaged"}</p>
         <div className="details-grid">
-          <div><strong>Node ID</strong><span>{node.id}</span></div>
-          <div><strong>Type</strong><span>{nodeType}</span></div>
-          {"portId" in details && <div><strong>Port</strong><span>{String(details.portId)}</span></div>}
-          {"config" in details && <div><strong>Config</strong><span>Available</span></div>}
-          {"status" in details && <div><strong>Status</strong><span>Available</span></div>}
+          <div><strong>ID</strong><span>{node.id}</span></div>
+          <div><strong>Serial</strong><span>{serial}</span></div>
+          <div><strong>Model</strong><span>{model}</span></div>
+          <div><strong>IP</strong><span>{lanIp}</span></div>
+          <div><strong>MAC</strong><span>{mac}</span></div>
+          <div><strong>Health</strong><span>{node.health.state}</span></div>
+          {node.issue_count > 0 && (
+            <div><strong>Issues</strong><span>{node.issue_count}</span></div>
+          )}
         </div>
         <details className="raw-details">
-          <summary>Show details JSON</summary>
-          <pre>{JSON.stringify(details, null, 2)}</pre>
+          <summary>Show metadata JSON</summary>
+          <pre>{JSON.stringify(node.metadata, null, 2)}</pre>
         </details>
       </aside>
     );

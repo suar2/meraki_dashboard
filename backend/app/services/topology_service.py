@@ -19,7 +19,7 @@ class TopologyService:
         self.store = store
 
     def _cache_name(self, org_id: str, network_id: str) -> str:
-        return f"cache_topology_{org_id}_{network_id}.json"
+        return f"cache_topology_v2_{org_id}_{network_id}.json"
 
     def _load_cache(self, org_id: str, network_id: str) -> TopologyGraph | None:
         cached = self.store.read_json(self._cache_name(org_id, network_id), None)
@@ -37,6 +37,39 @@ class TopologyService:
     @staticmethod
     def _as_dict(value: Any) -> dict[str, Any]:
         return value if isinstance(value, dict) else {}
+
+    @staticmethod
+    def _is_derived_id(value: str) -> bool:
+        """Return True if the string looks like a Meraki-generated numeric derivedId."""
+        return bool(value) and value.isdigit() and len(value) >= 10
+
+    def _resolve_neighbor_label(self, end_node: dict[str, Any], end: dict[str, Any]) -> str:
+        """Resolve a human-readable label for an unmanaged topology neighbor.
+
+        Priority: LLDP systemName → CDP deviceId → CDP platform →
+                  LLDP chassisId → node description → empty string.
+        """
+        end_disc = self._as_dict(end.get("discovered"))
+        end_lldp = self._as_dict(end_disc.get("lldp"))
+        end_cdp  = self._as_dict(end_disc.get("cdp"))
+
+        node_disc = self._as_dict(end_node.get("discovered"))
+        node_lldp = self._as_dict(node_disc.get("lldp"))
+        node_cdp  = self._as_dict(node_disc.get("cdp"))
+
+        candidates = [
+            str(end_lldp.get("systemName") or "").strip(),
+            str(node_lldp.get("systemName") or "").strip(),
+            str(end_cdp.get("deviceId") or "").strip(),
+            str(node_cdp.get("deviceId") or "").strip(),
+            str(end_cdp.get("platform") or "").strip(),
+            str(end_lldp.get("chassisId") or "").strip(),
+            str(end_node.get("description") or "").strip(),
+        ]
+        for candidate in candidates:
+            if candidate and not self._is_derived_id(candidate):
+                return candidate
+        return ""
 
     def _extract_port_id(self, end: dict[str, Any]) -> str:
         discovered = self._as_dict(end.get("discovered"))
@@ -138,8 +171,9 @@ class TopologyService:
 
             a_node_data = self._as_dict(a.get("node"))
             b_node_data = self._as_dict(b.get("node"))
-            a_node = a_node_data.get("derivedId") or self._as_dict(a_node_data.get("device")).get("serial")
-            b_node = b_node_data.get("derivedId") or self._as_dict(b_node_data.get("device")).get("serial")
+            # Prefer the device serial (merges with existing managed node) over derivedId.
+            a_node = self._as_dict(a_node_data.get("device")).get("serial") or a_node_data.get("derivedId")
+            b_node = self._as_dict(b_node_data.get("device")).get("serial") or b_node_data.get("derivedId")
             if not a_node or not b_node:
                 continue
 
@@ -147,11 +181,12 @@ class TopologyService:
                 end_node = self._as_dict(end.get("node"))
                 if node_id not in node_map:
                     inferred_subtype = self._infer_neighbor_subtype(end_node, end)
+                    resolved_label = self._resolve_neighbor_label(end_node, end) or node_id
                     node_map[node_id] = TopologyNode(
                         id=node_id,
                         type="neighbor",
                         subtype=inferred_subtype,
-                        label=end_node.get("description") or node_id,
+                        label=resolved_label,
                         managed=False,
                         metadata=end_node,
                         network={"id": network_id, "name": network.get("name", network_id)},
@@ -250,7 +285,14 @@ class TopologyService:
             for (device_serial, local_port), peers in connected_by_port.items():
                 if device_serial != serial:
                     continue
-                interfaces.append({"portId": local_port, "connectedPeers": peers})
+                cfg = ports_by_serial.get(serial, {}).get(str(local_port)) or {}
+                sta = status_by_serial.get(serial, {}).get(str(local_port)) or {}
+                interfaces.append({
+                    "portId": local_port,
+                    "connectedPeers": peers,
+                    "config": cfg,
+                    "status": sta,
+                })
 
             lldp_ports = self._as_dict(lldp_cdp_by_serial.get(serial, {}).get("ports"))
             for port_id, port_data in lldp_ports.items():
@@ -269,9 +311,19 @@ class TopologyService:
 
                 existing = next((entry for entry in interfaces if str(entry.get("portId")) == str(port_id)), None)
                 if existing:
-                    existing.setdefault("connectedPeers", []).append(discovered_peer)
+                    # Only append if this peer isn't already listed (avoid duplicates)
+                    existing_ids = {p.get("peer_id") for p in existing.get("connectedPeers", [])}
+                    if neighbor_name not in existing_ids:
+                        existing.setdefault("connectedPeers", []).append(discovered_peer)
                 else:
-                    interfaces.append({"portId": str(port_id), "connectedPeers": [discovered_peer]})
+                    cfg = ports_by_serial.get(serial, {}).get(str(port_id)) or {}
+                    sta = status_by_serial.get(serial, {}).get(str(port_id)) or {}
+                    interfaces.append({
+                        "portId": str(port_id),
+                        "connectedPeers": [discovered_peer],
+                        "config": cfg,
+                        "status": sta,
+                    })
 
             node.metadata["connected_interfaces"] = sorted(interfaces, key=lambda item: str(item.get("portId", "")))
 
