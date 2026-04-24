@@ -25,13 +25,17 @@ export interface HierarchyEdge {
   linkType: "wired" | "wireless" | "wan" | "discovered_partial";
   hasIssue: boolean;
   health: string;
-  rawLink: TopologyLink;
+  rawLink: TopologyLink | null;
+  edgeLabel?: string;
 }
 
 export interface HierarchyGraph {
   nodes: HierarchyNode[];
   edges: HierarchyEdge[];
 }
+
+const UNMAPPED_GROUP_ID = "__group_unmapped_devices";
+const SYNTHETIC_WAN_ID = "__synthetic_wan";
 
 function buildCoreIds(graph: TopologyGraph): Set<string> {
   const firewallIds = new Set<string>();
@@ -112,6 +116,29 @@ export function buildHierarchy(
 
   const hierNodes: HierarchyNode[] = [];
   const hierEdges: HierarchyEdge[] = [];
+  const edgeById = new Map<string, HierarchyEdge>();
+  const addEdge = (
+    source: string,
+    target: string,
+    linkType: HierarchyEdge["linkType"],
+    rawLink: TopologyLink | null,
+    opts?: { hasIssue?: boolean; health?: string; edgeLabel?: string }
+  ) => {
+    const id = `edge-${source}-${target}`;
+    if (edgeById.has(id)) return;
+    const e: HierarchyEdge = {
+      id,
+      source,
+      target,
+      linkType,
+      hasIssue: opts?.hasIssue ?? false,
+      health: opts?.health ?? "healthy",
+      rawLink: rawLink ?? null,
+      edgeLabel: opts?.edgeLabel,
+    };
+    edgeById.set(id, e);
+    hierEdges.push(e);
+  };
 
   // Add infra nodes
   for (const n of infraNodes) {
@@ -145,6 +172,30 @@ export function buildHierarchy(
     });
   }
 
+  // Ensure we always have a WAN root for fallback hierarchy.
+  if (!hierNodes.some((n) => n.layer === "WAN") && hierNodes.length > 0) {
+    const base = hierNodes[0].rawNode;
+    hierNodes.push({
+      id: SYNTHETIC_WAN_ID,
+      layer: "WAN",
+      displayLabel: "Internet / WAN",
+      rawNode: {
+        ...base,
+        id: SYNTHETIC_WAN_ID,
+        type: "wan",
+        subtype: "wan",
+        label: "Internet / WAN",
+        managed: false,
+        metadata: {},
+      },
+      isGroup: false,
+      groupCount: 0,
+      groupParentId: null,
+      groupType: null,
+      groupMembers: [],
+    });
+  }
+
   // ── Port nodes ─────────────────────────────────────────────────────────────
   // For each managed switch, create one port node per connected port using
   // connected_interfaces stored in the switch's metadata by the backend.
@@ -157,7 +208,12 @@ export function buildHierarchy(
     const layer = switchNode.layer;
     if (layer !== "CORE_SWITCH" && layer !== "ACCESS_SWITCH") continue;
 
-    const interfaces = (switchNode.rawNode.metadata?.connected_interfaces as Array<Record<string, unknown>>) ?? [];
+    const rawIfaces = (switchNode.rawNode.metadata?.connected_interfaces as Array<Record<string, unknown>>) ?? [];
+    const interfaces = [...rawIfaces].sort((a, b) => {
+      const pa = parseInt(String(a.portId ?? "0"), 10) || 0;
+      const pb = parseInt(String(b.portId ?? "0"), 10) || 0;
+      return pa - pb;
+    });
 
     for (const iface of interfaces) {
       const portId = String(iface.portId ?? "");
@@ -188,29 +244,25 @@ export function buildHierarchy(
       });
       hierNodeIds.add(portNodeId);
 
-      // Switch → port edge
-      hierEdges.push({
-        id: `__port_edge_${switchNode.id}_${portId}`,
-        source: switchNode.id,
-        target: portNodeId,
-        linkType: "wired",
-        hasIssue: false,
-        health: "healthy",
-        rawLink: null as unknown as TopologyLink,
-      });
+      // Switch → port edge (no raw link; label from port config for styling where possible)
+      const c = cfg as { type?: string; vlan?: number; nativeVlan?: number };
+      const ptag = [String(c.type || ""), c.nativeVlan, c.vlan].filter((x) => x !== undefined && x !== null && x !== "").join(" ");
+      addEdge(switchNode.id, portNodeId, "wired", null, { edgeLabel: ptag ? `p${portId} ${ptag}` : `p${portId}` });
 
       // Port → peer edges
       for (const peer of knownPeers) {
         const peerId = String(peer.peer_id ?? "");
-        hierEdges.push({
-          id: `__port_peer_edge_${portNodeId}_${peerId}`,
-          source: portNodeId,
-          target: peerId,
-          linkType: "wired",
-          hasIssue: false,
-          health: "healthy",
-          rawLink: null as unknown as TopologyLink,
-        });
+        let gl =
+          graph.links.find(
+            (l) => l.target === peerId && (l.source === portNodeId || l.source === switchNode.id)
+          ) || null;
+        if (!gl) {
+          gl =
+            graph.links.find((l) => l.source === switchNode.id && l.target === peerId) || null;
+        }
+        const sp = (gl?.source_port as { label?: string } | undefined)?.label;
+        const lbl = sp || (gl?.discovery_method ? String(gl.discovery_method) : "");
+        addEdge(portNodeId, peerId, "wired", gl, { edgeLabel: lbl || undefined });
         // Mark this switch↔peer pair so we skip the raw graph.links edge
         portCoveredPairs.add(`${switchNode.id}|${peerId}`);
         portCoveredPairs.add(`${peerId}|${switchNode.id}`);
@@ -243,15 +295,7 @@ export function buildHierarchy(
             groupType,
             groupMembers: [],
           });
-          hierEdges.push({
-            id: `__client_edge_${parentId}_${client.id}`,
-            source: parentId,
-            target: client.id,
-            linkType: groupType === "wifi" ? "wireless" : "wired",
-            hasIssue: false,
-            health: "healthy",
-            rawLink: null as unknown as TopologyLink,
-          });
+          addEdge(parentId, client.id, groupType === "wifi" ? "wireless" : "wired", null);
         }
       } else {
         hierNodes.push({
@@ -265,15 +309,7 @@ export function buildHierarchy(
           groupType,
           groupMembers: members,
         });
-        hierEdges.push({
-          id: `__group_edge_${groupType}_${parentId}`,
-          source: parentId,
-          target: groupId,
-          linkType: groupType === "wifi" ? "wireless" : "wired",
-          hasIssue: false,
-          health: "healthy",
-          rawLink: null as unknown as TopologyLink,
-        });
+        addEdge(parentId, groupId, groupType === "wifi" ? "wireless" : "wired", null);
         members.forEach((c) => handledClientIds.add(c.id));
       }
     }
@@ -317,16 +353,127 @@ export function buildHierarchy(
     }
 
     const lt = link.link_type as HierarchyEdge["linkType"];
-    hierEdges.push({
-      id: link.id,
-      source: link.source,
-      target: link.target,
-      linkType: lt,
+    const pl = (link.source_port as { label?: string } | undefined)?.label;
+    addEdge(link.source, link.target, lt, link, {
       hasIssue: link.mismatches.length > 0 || link.faults.length > 0,
       health: link.health,
-      rawLink: link,
+      edgeLabel: pl,
     });
   }
 
-  return { nodes: hierNodes, edges: hierEdges };
+  // Ensure every known parent-child relationship has an explicit edge.
+  for (const node of hierNodes) {
+    if (!node.groupParentId) continue;
+    addEdge(node.groupParentId, node.id, node.groupType === "wifi" ? "wireless" : "wired", null);
+  }
+
+  // Infer WAN -> Firewall and Firewall -> Core edges if missing
+  const wanNodes = hierNodes.filter((n) => n.layer === "WAN");
+  const fwNodes = hierNodes.filter((n) => n.layer === "FIREWALL");
+  const coreNodes = hierNodes.filter((n) => n.layer === "CORE_SWITCH");
+  if (wanNodes.length > 0 && fwNodes.length > 0) addEdge(wanNodes[0].id, fwNodes[0].id, "wan", null);
+  if (fwNodes.length > 0 && coreNodes.length > 0) {
+    addEdge(fwNodes[0].id, coreNodes[0].id, "wired", null);
+  } else {
+    if (fwNodes.length === 0) console.warn("[topology] cannot build FW -> Core fallback edge: no firewall resolved");
+    if (coreNodes.length === 0) console.warn("[topology] cannot build FW -> Core fallback edge: no core switch resolved");
+  }
+
+  // Fallback hierarchy when backend links are incomplete:
+  // Core -> Access/AP/Unknown
+  const accessNodes = hierNodes.filter(
+    (n) => n.layer === "ACCESS_SWITCH" || n.layer === "ACCESS_POINT" || (n.layer === "UNKNOWN" && n.id !== UNMAPPED_GROUP_ID)
+  );
+  const infraEdgeCount = hierEdges.filter((e) => {
+    const src = hierNodes.find((n) => n.id === e.source);
+    const tgt = hierNodes.find((n) => n.id === e.target);
+    return src && tgt && src.layer !== "CLIENT" && tgt.layer !== "CLIENT";
+  }).length;
+  if (infraEdgeCount === 0 && coreNodes.length > 0) {
+    for (const access of accessNodes) {
+      addEdge(coreNodes[0].id, access.id, "wired", null);
+    }
+  }
+
+  // Prevent visible orphans: place disconnected nodes under an explicit Unmapped group.
+  const nodeIds = new Set(hierNodes.map((n) => n.id));
+  const incoming = new Map<string, number>();
+  for (const e of hierEdges) {
+    incoming.set(e.target, (incoming.get(e.target) ?? 0) + 1);
+  }
+  const roots = new Set([
+    ...wanNodes.map((n) => n.id),
+    ...fwNodes.filter((n) => (incoming.get(n.id) ?? 0) === 0).map((n) => n.id),
+  ]);
+  const orphanIds = hierNodes
+    .filter((n) => !roots.has(n.id) && (incoming.get(n.id) ?? 0) === 0)
+    .map((n) => n.id);
+
+  if (orphanIds.length > 0 && !nodeIds.has(UNMAPPED_GROUP_ID)) {
+    const firstOrphan = hierNodes.find((n) => orphanIds.includes(n.id));
+    hierNodes.push({
+      id: UNMAPPED_GROUP_ID,
+      layer: "UNKNOWN",
+      displayLabel: `Unmapped devices (${orphanIds.length})`,
+      rawNode: (firstOrphan?.rawNode ?? hierNodes[0]?.rawNode) as TopologyNode,
+      isGroup: true,
+      groupCount: orphanIds.length,
+      groupParentId: null,
+      groupType: null,
+      groupMembers: [],
+    });
+    for (const orphanId of orphanIds) {
+      addEdge(UNMAPPED_GROUP_ID, orphanId, "discovered_partial", null);
+    }
+  }
+
+  // Collapse duplicate infrastructure links between the same device pair.
+  // Keep only one visible edge for pairs like FW<->Core and Core<->AP.
+  const nodeById = new Map(hierNodes.map((n) => [n.id, n]));
+  const pickPriority = (e: HierarchyEdge) => {
+    // Prefer real backend links, then wired, then fallback/discovered.
+    const hasRaw = e.rawLink ? 10 : 0;
+    const typeScore =
+      e.linkType === "wired" ? 5 :
+      e.linkType === "wan" ? 4 :
+      e.linkType === "wireless" ? 3 : 1;
+    const issueScore = e.hasIssue ? 2 : 0;
+    return hasRaw + typeScore + issueScore;
+  };
+  const pairKey = (a: string, b: string) => (a < b ? `${a}|${b}` : `${b}|${a}`);
+  const seenPair = new Map<string, HierarchyEdge>();
+  const dedupedEdges: HierarchyEdge[] = [];
+  for (const edge of hierEdges) {
+    const src = nodeById.get(edge.source);
+    const tgt = nodeById.get(edge.target);
+    if (!src || !tgt) {
+      dedupedEdges.push(edge);
+      continue;
+    }
+    const isInfraPair =
+      src.layer !== "CLIENT" &&
+      tgt.layer !== "CLIENT" &&
+      src.layer !== "PORT" &&
+      tgt.layer !== "PORT" &&
+      !src.isGroup &&
+      !tgt.isGroup;
+    if (!isInfraPair) {
+      dedupedEdges.push(edge);
+      continue;
+    }
+    const key = pairKey(edge.source, edge.target);
+    const existing = seenPair.get(key);
+    if (!existing) {
+      seenPair.set(key, edge);
+      dedupedEdges.push(edge);
+      continue;
+    }
+    if (pickPriority(edge) > pickPriority(existing)) {
+      const idx = dedupedEdges.findIndex((e) => e.id === existing.id);
+      if (idx >= 0) dedupedEdges[idx] = edge;
+      seenPair.set(key, edge);
+    }
+  }
+
+  return { nodes: hierNodes, edges: dedupedEdges };
 }

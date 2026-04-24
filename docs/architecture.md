@@ -27,3 +27,10 @@
 - Issue: classified fault/mismatch with severity/remediable metadata
 - RemediationAction: executable safe change payload with before/after state
 
+## Runtime notes
+
+- Wired topology is sourced from Meraki link-layer topology and augmented with per-device LLDP/CDP neighbors.
+- Wireless client links come only from client association data, not LLDP/CDP.
+- Remediation endpoints enforce a strict allow-list of configuration keys.
+- Layout persistence and audit records are scoped to organization/network context.
+

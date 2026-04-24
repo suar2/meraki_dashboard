@@ -101,16 +101,19 @@ html, body, #root {
 }
 
 .toolbar input[type="text"],
-.toolbar input:not([type]) {
+.toolbar input:not([type]),
+.toolbar select {
   background: #0d1f38;
   color: #d8eaff;
   border: 1px solid #253c5a;
   border-radius: 6px;
   padding: 4px 10px;
   font-size: 12px;
-  width: 220px;
   outline: none;
 }
+
+.toolbar input[type="text"],
+.toolbar input:not([type]) { width: 220px; }
 
 .toolbar input[type="text"]:focus { border-color: #3b70b0; }
 

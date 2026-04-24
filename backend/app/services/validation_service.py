@@ -31,6 +31,12 @@ class ValidationService:
                     scope="link",
                     description="Peer link is not fully managed or neighbor data is incomplete.",
                     remediable=False,
+                    source_data={
+                        "source_serial": source_serial,
+                        "source_port_id": source_port_id,
+                        "target_serial": target_serial,
+                        "target_port_id": target_port_id,
+                    },
                 )
             )
             return mismatches, faults, actions
@@ -51,20 +57,61 @@ class ValidationService:
             )
             actions.append(self._copy_action(link_id, "Copy mode from A to B", source_serial, source_port_id, target_serial, target_port_id, target_cfg, {"type": src_type}))
 
-        if src_type == "access" and source_cfg.get("vlan") != target_cfg.get("vlan"):
-            mismatches.append(
-                Issue(
-                    id=f"{link_id}-access-vlan",
-                    category="config_mismatch",
-                    severity="critical",
-                    scope="link",
-                    description=f"Access VLAN mismatch: {source_cfg.get('vlan')} vs {target_cfg.get('vlan')}",
-                    remediable=True,
+        # Access VLAN: do not report both "mismatch" and "missing" for the same pair; trunk comparisons only if both sides are trunk
+        if src_type == "access" and dst_type == "access":
+            sv = source_cfg.get("vlan")
+            tv = target_cfg.get("vlan")
+            if sv is None or tv is None:
+                if sv != tv:
+                    mismatches.append(
+                        Issue(
+                            id=f"{link_id}-missing-access-vlan",
+                            category="config_mismatch",
+                            severity="warning",
+                            scope="port",
+                            description=f"Access VLAN not set on one or both sides (A={sv!r}, B={tv!r}).",
+                            remediable=sv is not None,
+                            suggested_actions=["Set explicit access VLAN on both ports when both are in access mode."],
+                        )
+                    )
+                    if sv is not None:
+                        actions.append(
+                            self._copy_action(
+                                link_id,
+                                "Copy access VLAN from A to B",
+                                source_serial,
+                                source_port_id,
+                                target_serial,
+                                target_port_id,
+                                target_cfg,
+                                {"vlan": sv, "type": "access"},
+                            )
+                        )
+            elif sv != tv:
+                mismatches.append(
+                    Issue(
+                        id=f"{link_id}-access-vlan",
+                        category="config_mismatch",
+                        severity="critical",
+                        scope="link",
+                        description=f"Access VLAN mismatch: {sv} vs {tv}",
+                        remediable=True,
+                    )
                 )
-            )
-            actions.append(self._copy_action(link_id, "Copy access VLAN from A to B", source_serial, source_port_id, target_serial, target_port_id, target_cfg, {"vlan": source_cfg.get("vlan"), "type": "access"}))
+                actions.append(
+                    self._copy_action(
+                        link_id,
+                        "Copy access VLAN from A to B",
+                        source_serial,
+                        source_port_id,
+                        target_serial,
+                        target_port_id,
+                        target_cfg,
+                        {"vlan": sv, "type": "access"},
+                    )
+                )
 
-        if src_type == "trunk":
+        if src_type == "trunk" and dst_type == "trunk":
             if source_cfg.get("nativeVlan") != target_cfg.get("nativeVlan"):
                 mismatches.append(
                     Issue(
@@ -101,6 +148,20 @@ class ValidationService:
                     remediable=True,
                 )
             )
+            actions.append(self._copy_action(link_id, "Copy admin state from A to B", source_serial, source_port_id, target_serial, target_port_id, target_cfg, {"enabled": source_cfg.get("enabled")}))
+
+        if source_cfg.get("enabled") is False or target_cfg.get("enabled") is False:
+            mismatches.append(
+                Issue(
+                    id=f"{link_id}-port-disabled",
+                    category="operational_warning",
+                    severity="warning",
+                    scope="port",
+                    description="One side of the link is administratively disabled.",
+                    remediable=True,
+                    suggested_actions=["Enable disabled port if link should be active."],
+                )
+            )
 
         if source_cfg.get("poeEnabled") != target_cfg.get("poeEnabled"):
             mismatches.append(
@@ -113,6 +174,7 @@ class ValidationService:
                     remediable=True,
                 )
             )
+            actions.append(self._copy_action(link_id, "Copy PoE state from A to B", source_serial, source_port_id, target_serial, target_port_id, target_cfg, {"poeEnabled": source_cfg.get("poeEnabled")}))
 
         for side, status in (("A", source_status), ("B", target_status)):
             if not status:
@@ -129,6 +191,18 @@ class ValidationService:
                         remediable=False,
                     )
                 )
+            warnings = status.get("warnings", [])
+            if warnings:
+                faults.append(
+                    Issue(
+                        id=f"{link_id}-{side}-warnings",
+                        category="operational_warning",
+                        severity="warning",
+                        scope="port",
+                        description=f"Port {side} warnings: {', '.join(warnings)}",
+                        remediable=False,
+                    )
+                )
             if status.get("isUplink") and status.get("status") != "Connected":
                 faults.append(
                     Issue(
@@ -137,6 +211,31 @@ class ValidationService:
                         severity="critical",
                         scope="port",
                         description=f"Uplink on side {side} is not connected.",
+                        remediable=False,
+                    )
+                )
+            # Surface physical-layer counters as manual-investigation diagnostics.
+            crc = status.get("crcErrors")
+            if isinstance(crc, int) and crc > 0:
+                faults.append(
+                    Issue(
+                        id=f"{link_id}-{side}-crc",
+                        category="physical_suspicion",
+                        severity="warning",
+                        scope="port",
+                        description=f"Port {side} reports CRC errors ({crc}). Check cable/optic/PHY.",
+                        remediable=False,
+                    )
+                )
+            poe_fault = status.get("poe", {}).get("status") if isinstance(status.get("poe"), dict) else None
+            if poe_fault and str(poe_fault).lower() not in {"ok", "enabled"}:
+                faults.append(
+                    Issue(
+                        id=f"{link_id}-{side}-poe-fault",
+                        category="poe_warning",
+                        severity="warning",
+                        scope="port",
+                        description=f"Port {side} reports PoE status '{poe_fault}'.",
                         remediable=False,
                     )
                 )

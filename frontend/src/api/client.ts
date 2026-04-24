@@ -12,6 +12,11 @@ export const fetchTopology = async (orgId: string, networkId: string): Promise<T
   (await api.get(`/topology/${orgId}/${networkId}`)).data;
 export const saveLayout = async (org_id: string, network_id: string, positions: Record<string, { x: number; y: number }>) =>
   api.post("/layout", { org_id, network_id, positions });
+
+export const loadLayout = async (orgId: string, networkId: string): Promise<Record<string, { x: number; y: number }>> => {
+  const data = (await api.get<Record<string, { x: number; y: number }>>(`/layout/${orgId}/${networkId}`)).data;
+  return data && typeof data === "object" ? data : {};
+};
 export const executeRemediation = async (org_id: string, network_id: string, action: RemediationAction, actor: string) =>
   api.post("/remediation/execute", { org_id, network_id, action, actor });
 export const listAudit = async () => (await api.get("/audit")).data;

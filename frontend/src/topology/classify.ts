@@ -6,6 +6,8 @@ export type NodeLayer =
   | "CORE_SWITCH"
   | "ACCESS_SWITCH"
   | "PORT"
+  | "TRUNK_HOST"
+  | "PORT_ACCESS_GROUP"
   | "ACCESS_POINT"
   | "CLIENT"
   | "UNKNOWN";
@@ -19,6 +21,22 @@ export function classifyNode(
   const model = String(
     node.metadata?.model || node.metadata?.productType || ""
   ).toLowerCase();
+  const role = String(
+    (node.metadata as { role?: string } | undefined)?.role || ""
+  ).toLowerCase();
+
+  if (node.type === "synthetic" && sub === "trunk_host") {
+    return "TRUNK_HOST";
+  }
+  if (node.type === "synthetic" && sub === "port_access_group") {
+    return "PORT_ACCESS_GROUP";
+  }
+  if (role === "trunk_host") {
+    return "TRUNK_HOST";
+  }
+  if (role === "port_access_group") {
+    return "PORT_ACCESS_GROUP";
+  }
 
   // CLIENT must be checked before ACCESS_POINT: wireless clients have
   // subtype="wireless" but type="client" and must not be classified as APs.
@@ -130,18 +148,22 @@ export const LAYER_ORDER: NodeLayer[] = [
   "CORE_SWITCH",
   "ACCESS_SWITCH",
   "PORT",
+  "TRUNK_HOST",
+  "PORT_ACCESS_GROUP",
   "ACCESS_POINT",
   "CLIENT",
   "UNKNOWN",
 ];
 
 export const LAYER_Y: Record<NodeLayer, number> = {
-  WAN: 60,
-  FIREWALL: 220,
-  CORE_SWITCH: 390,
-  ACCESS_SWITCH: 560,
-  PORT: 700,
-  ACCESS_POINT: 860,
-  CLIENT: 1040,
-  UNKNOWN: 860,
+  WAN: 80,
+  FIREWALL: 250,
+  CORE_SWITCH: 420,
+  ACCESS_SWITCH: 590,
+  PORT: 760,
+  TRUNK_HOST: 820,
+  PORT_ACCESS_GROUP: 835,
+  ACCESS_POINT: 760,
+  CLIENT: 930,
+  UNKNOWN: 760,
 };

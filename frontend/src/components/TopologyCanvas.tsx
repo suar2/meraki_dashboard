@@ -4,83 +4,102 @@ import {
   Background,
   Controls,
   MiniMap,
-  Panel,
   Node,
-  Edge,
-  useNodesState,
-  useEdgesState,
-  useReactFlow,
+  NodeChange,
+  applyNodeChanges,
   NodeMouseHandler,
   EdgeMouseHandler,
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
 import { TopologyGraph, TopologyNode, TopologyLink, RemediationAction } from "../types/topology";
 import { useTopologyLayout, ViewMode } from "../topology/useTopologyLayout";
-import { nodeTypes } from "../topology/nodeTypes";
+import { nodeTypes } from "../topology/nodeTypesMap";
 import { HierarchyNode } from "../topology/buildHierarchy";
+import { loadLayout, saveLayout } from "../api/client";
+import { FlowControls } from "./FlowControls";
+import { VIEW_MODE_LABELS } from "../topology/viewModeLabels";
+
+const LAYOUT_SAVE_DEBOUNCE_MS = 400;
 
 interface Props {
   graph: TopologyGraph | null;
+  orgId: string;
+  networkId: string;
   search: string;
   showMismatchesOnly: boolean;
   showWireless: boolean;
+  wiredOnly: boolean;
+  wirelessOnly: boolean;
+  unmanagedOnly: boolean;
+  clientsOnly: boolean;
+  severityFilter: "all" | "critical" | "warning" | "healthy";
   onNodeSelect: (node: TopologyNode | undefined) => void;
   onLinkSelect: (link: TopologyLink | undefined) => void;
   onRemediationTrigger: (action: RemediationAction) => void;
 }
 
-// Rendered inside <ReactFlow> so useReactFlow() is available.
-// Calls fitView whenever the node count changes (i.e. after a topology load).
-function FlowControls({ nodeCount }: { nodeCount: number }) {
-  const { fitView } = useReactFlow();
-  const prevCountRef = React.useRef(0);
-
-  React.useEffect(() => {
-    if (nodeCount > 0 && nodeCount !== prevCountRef.current) {
-      prevCountRef.current = nodeCount;
-      // rAF lets React Flow finish positioning nodes before we fit
-      requestAnimationFrame(() => fitView({ padding: 0.15, duration: 400 }));
-    }
-  }, [nodeCount, fitView]);
-
-  return (
-    <Panel position="top-left">
-      <button
-        onClick={() => fitView({ padding: 0.2, duration: 400 })}
-        style={{
-          background: "#0d1f38",
-          color: "#7ab8f5",
-          border: "1px solid #2e5080",
-          borderRadius: 5,
-          padding: "4px 10px",
-          fontSize: 11,
-          fontWeight: 600,
-          cursor: "pointer",
-        }}
-      >
-        Reset view
-      </button>
-    </Panel>
-  );
-}
-
-const VIEW_LABELS: Record<ViewMode, string> = {
-  physical: "Physical",
-  logical: "Logical",
-  client: "Client",
-};
-
 export function TopologyCanvas({
   graph,
+  orgId,
+  networkId,
   search,
   showMismatchesOnly,
   showWireless,
+  wiredOnly,
+  wirelessOnly,
+  unmanagedOnly,
+  clientsOnly,
+  severityFilter,
   onNodeSelect,
   onLinkSelect,
   onRemediationTrigger,
 }: Props) {
   const [viewMode, setViewMode] = React.useState<ViewMode>("physical");
   const [expandedGroups, setExpandedGroups] = React.useState<Set<string>>(new Set());
+  const [savedLayoutPositions, setSavedLayoutPositions] = React.useState<Record<string, { x: number; y: number }> | null>(
+    null
+  );
+  const layoutSaveTimerRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
+  const pendingLayoutRef = React.useRef<{
+    orgId: string;
+    networkId: string;
+    positions: Record<string, { x: number; y: number }>;
+  } | null>(null);
+
+  React.useEffect(() => {
+    if (layoutSaveTimerRef.current) {
+      clearTimeout(layoutSaveTimerRef.current);
+      layoutSaveTimerRef.current = null;
+    }
+    pendingLayoutRef.current = null;
+  }, [orgId, networkId]);
+
+  React.useEffect(() => {
+    if (!orgId || !networkId) {
+      setSavedLayoutPositions(null);
+      return;
+    }
+    let cancelled = false;
+    loadLayout(orgId, networkId)
+      .then((pos) => {
+        if (!cancelled) setSavedLayoutPositions(Object.keys(pos).length ? pos : null);
+      })
+      .catch(() => {
+        if (!cancelled) setSavedLayoutPositions(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [orgId, networkId]);
+
+  React.useEffect(() => {
+    return () => {
+      if (layoutSaveTimerRef.current) {
+        clearTimeout(layoutSaveTimerRef.current);
+        layoutSaveTimerRef.current = null;
+      }
+    };
+  }, []);
 
   const layoutResult = useTopologyLayout(
     graph,
@@ -88,16 +107,22 @@ export function TopologyCanvas({
     viewMode,
     search,
     showMismatchesOnly,
-    showWireless
+    showWireless,
+    wiredOnly,
+    wirelessOnly,
+    unmanagedOnly,
+    clientsOnly,
+    severityFilter,
+    savedLayoutPositions
   );
 
-  const [nodes, setNodes, onNodesChange] = useNodesState<Node>([]);
-  const [edges, setEdges, onEdgesChange] = useEdgesState<Edge>([]);
+  const nodes = layoutResult.nodes;
+  const edges = layoutResult.edges;
+  const [localNodes, setLocalNodes] = React.useState<Node[]>([]);
 
   React.useEffect(() => {
-    setNodes(layoutResult.nodes);
-    setEdges(layoutResult.edges);
-  }, [layoutResult, setNodes, setEdges]);
+    setLocalNodes(nodes);
+  }, [nodes]);
 
   const toggleGroup = React.useCallback((groupId: string) => {
     setExpandedGroups((prev) => {
@@ -136,24 +161,59 @@ export function TopologyCanvas({
 
   const layerCount = graph
     ? new Set(
-        (layoutResult.nodes as Node[]).map((n) => {
+        layoutResult.nodes.map((n) => {
           const hn = n.data?.hierNode as HierarchyNode | undefined;
           return hn?.layer ?? "UNKNOWN";
         })
       ).size
     : 0;
 
+  const onNodesChange = React.useCallback((changes: NodeChange<Node>[]) => {
+    setLocalNodes((prev) => applyNodeChanges(changes, prev));
+  }, []);
+
+  const flushLayoutSave = React.useCallback(() => {
+    const pending = pendingLayoutRef.current;
+    if (!pending) return;
+    pendingLayoutRef.current = null;
+    void (async () => {
+      try {
+        await saveLayout(pending.orgId, pending.networkId, pending.positions);
+        setSavedLayoutPositions((prev) => ({ ...(prev ?? {}), ...pending.positions }));
+      } catch (error) {
+        console.warn("[topology] failed to persist layout", error);
+      }
+    })();
+  }, []);
+
+  const onNodeDragStop = React.useCallback(
+    (_evt: React.MouseEvent, _node: Node, allNodes: Node[]) => {
+      if (!orgId || !networkId) return;
+      const positions = Object.fromEntries(allNodes.map((n) => [n.id, { x: n.position.x, y: n.position.y }]));
+      pendingLayoutRef.current = { orgId, networkId, positions };
+      if (layoutSaveTimerRef.current) {
+        clearTimeout(layoutSaveTimerRef.current);
+        layoutSaveTimerRef.current = null;
+      }
+      layoutSaveTimerRef.current = setTimeout(() => {
+        layoutSaveTimerRef.current = null;
+        flushLayoutSave();
+      }, LAYOUT_SAVE_DEBOUNCE_MS);
+    },
+    [orgId, networkId, flushLayoutSave]
+  );
+
   return (
     <div className="topo-canvas-wrapper">
-      {/* View mode selector */}
       <div className="view-mode-bar">
-        {(Object.keys(VIEW_LABELS) as ViewMode[]).map((mode) => (
+        {(Object.keys(VIEW_MODE_LABELS) as ViewMode[]).map((mode) => (
           <button
+            type="button"
             key={mode}
             className={`view-btn${viewMode === mode ? " active" : ""}`}
             onClick={() => setViewMode(mode)}
           >
-            {VIEW_LABELS[mode]}
+            {VIEW_MODE_LABELS[mode]}
           </button>
         ))}
         {graph && (
@@ -163,7 +223,6 @@ export function TopologyCanvas({
         )}
       </div>
 
-      {/* Layer legend */}
       <div className="layer-legend">
         {[
           { label: "WAN", color: "#4a6fa1" },
@@ -179,10 +238,7 @@ export function TopologyCanvas({
           </span>
         ))}
         {expandedGroups.size > 0 && (
-          <button
-            className="collapse-all-btn"
-            onClick={() => setExpandedGroups(new Set())}
-          >
+          <button type="button" className="collapse-all-btn" onClick={() => setExpandedGroups(new Set())}>
             Collapse all
           </button>
         )}
@@ -195,18 +251,22 @@ export function TopologyCanvas({
       )}
 
       <ReactFlow
-        nodes={nodes}
+        nodes={localNodes}
         edges={edges}
         nodeTypes={nodeTypes}
         onNodesChange={onNodesChange}
-        onEdgesChange={onEdgesChange}
+        onNodeDragStop={onNodeDragStop}
         onNodeClick={handleNodeClick}
         onEdgeClick={handleEdgeClick}
         minZoom={0.15}
         maxZoom={2}
+        nodesDraggable
+        panOnDrag
+        zoomOnScroll
+        fitView
         proOptions={{ hideAttribution: false }}
       >
-        <FlowControls nodeCount={nodes.length} />
+        <FlowControls nodeCount={localNodes.length} />
         <MiniMap
           style={{ background: "#081320" }}
           maskColor="rgba(0,0,0,0.6)"
@@ -219,6 +279,13 @@ export function TopologyCanvas({
         <Controls />
         <Background color="#1a2d45" gap={24} size={1} />
       </ReactFlow>
+      {graph && edges.length === 0 && (
+        <div className="topo-empty" style={{ position: "absolute", inset: 0, pointerEvents: "none" }}>
+          <span style={{ color: "#ffb86c", borderColor: "#8a5b2b" }}>
+            No edges built. Check topology link mapping/fallback hierarchy.
+          </span>
+        </div>
+      )}
     </div>
   );
 }

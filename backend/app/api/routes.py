@@ -83,11 +83,15 @@ async def remediation_execute(payload: RemediationExecuteRequest):
             AuditLogEntry(
                 timestamp=audit_service.now(),
                 actor=payload.actor,
+                org_id=payload.org_id,
+                network_id=payload.network_id,
                 device_serial=payload.action.target_device_serial,
                 port_id=payload.action.target_port_id,
                 issue_id=payload.action.issue_id,
+                issue_category=str(payload.action.action_type),
                 previous_config=payload.action.current_values,
-                new_config=payload.action.proposed_values,
+                proposed_config=payload.action.proposed_values,
+                new_config={},
                 outcome=f"failure: {exc}",
                 api_response={},
             )

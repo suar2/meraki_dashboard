@@ -86,6 +86,14 @@ class TopologyGraph(BaseModel):
     issues: list[Issue]
     summary: TopologySummary
     generated_at: datetime
+    # Switch port + client reality (raw Meraki-friendly maps for UI / debug)
+    switch_ports: dict[str, list[dict[str, Any]]] = Field(default_factory=dict)
+    clients_by_switch_port: dict[str, list[dict[str, Any]]] = Field(default_factory=dict)
+    port_peer_hints: list[dict[str, Any]] = Field(
+        default_factory=list,
+        description="Synthetic or client-derived peers per switch port (trunk head, access group, etc.)",
+    )
+    topology_debug: dict[str, Any] = Field(default_factory=dict)
 
 
 class LayoutPayload(BaseModel):
@@ -97,10 +105,14 @@ class LayoutPayload(BaseModel):
 class AuditLogEntry(BaseModel):
     timestamp: datetime
     actor: str = "dashboard-user"
+    org_id: str = ""
+    network_id: str = ""
     device_serial: str
     port_id: str
     issue_id: str
+    issue_category: str = ""
     previous_config: dict[str, Any]
+    proposed_config: dict[str, Any] = Field(default_factory=dict)
     new_config: dict[str, Any]
     outcome: str
     api_response: dict[str, Any] = Field(default_factory=dict)
