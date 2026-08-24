@@ -26,6 +26,11 @@ class Settings(BaseSettings):
     cors_origins: str = Field(default="http://localhost:43123", alias="CORS_ORIGINS")
     cache_ttl_seconds: int = Field(default=60, alias="CACHE_TTL_SECONDS")
 
+    @field_validator("meraki_api_key", "secret_key", "app_env", "log_level", "cors_origins", "data_dir", mode="before")
+    @classmethod
+    def strip_env(cls, value: object) -> object:
+        return value.strip() if isinstance(value, str) else value
+
     @field_validator("meraki_api_key")
     @classmethod
     def validate_key(cls, value: str) -> str:
