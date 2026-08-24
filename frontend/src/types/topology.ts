@@ -147,6 +147,9 @@ export interface TopologyDiagnostics {
   unknown_confidence?: number;
   unresolved_nodes: number;
   duplicate_identities: number;
+  duplicate_chassis_candidates: number;
+  duplicate_physical_edges: number;
+  unresolved_identity_count: number;
   orphans: number;
   total_nodes: number;
   managed_nodes?: number;

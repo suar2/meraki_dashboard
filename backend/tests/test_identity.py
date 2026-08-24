@@ -6,9 +6,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from app.services.identity import (
     ManagedInventory,
+    best_identity_name,
     human_label,
     is_derived_id,
     is_wireless_client,
+    normalize_hostname,
     normalize_mac,
     resolve_link_end,
     unmanaged_node_id,
@@ -135,7 +137,19 @@ class IdentityTests(unittest.TestCase):
         self.assertEqual(hit.node_id, "Q2KN-MS-0001")
         self.assertIn("topology_derivedId", hit.evidence)
 
-    def test_numeric_derived_id_is_never_a_hostname(self):
+    def test_best_name_resolution_before_raw_mac(self):
+        self.assertEqual(best_identity_name("00:11:22:33:44:55", "Proxmox"), "Proxmox")
+        self.assertEqual(best_identity_name("aa:bb:cc:dd:ee:ff", "10.1.2.20"), "10.1.2.20")
+        self.assertEqual(best_identity_name("aa:bb:cc:dd:ee:ff"), "aa:bb:cc:dd:ee:ff")
+        self.assertEqual(
+            best_identity_name(
+                {"lldp": {"systemName": "Proxmox VE"}, "mac": "aa:bb:cc:dd:ee:ff", "ip": "10.1.2.20"}
+            ),
+            "Proxmox VE",
+        )
+        self.assertEqual(human_label("5555555555", "00:18:0a:aa:aa:04", "Main - camera"), "Main - camera")
+        self.assertEqual(normalize_hostname("pve.local"), "pve")
+        self.assertEqual(normalize_hostname("Meraki MX67 - FW-01"), "fw01")
         self.assertTrue(is_derived_id("5555555555"))
         self.assertEqual(human_label("5555555555", "Main - camera"), "Main - camera")
         self.assertEqual(human_label("5555555555"), "")

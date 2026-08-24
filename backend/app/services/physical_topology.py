@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import re
 from datetime import datetime, timezone
 from typing import Any, Callable
 
@@ -52,7 +51,16 @@ VM_HINTS = (
 )
 
 
-from app.services.identity import normalize_mac
+from app.services.identity import (
+    best_identity_name,
+    canonical_port_id,
+    looks_like_mac,
+    normalize_hostname,
+    normalize_mac,
+    physical_port_id,
+)
+
+MGMT_NAME_HINTS = ("mgmt", "management", "ilo", "idrac", "ipmi", "bmc", "imm")
 
 
 def _norm(value: Any) -> str:
@@ -61,22 +69,6 @@ def _norm(value: Any) -> str:
 
 def _mac(value: Any) -> str:
     return normalize_mac(value)
-
-
-def canonical_port_id(port_id: str) -> str:
-    text = str(port_id or "").strip()
-    if not text:
-        return text
-    low = text.lower()
-    if low.startswith("port") and low[4:].isdigit():
-        return str(int(low[4:]))
-    if text.isdigit():
-        return str(int(text))
-    return text
-
-
-def looks_like_mac(name: str) -> bool:
-    return bool(re.fullmatch(r"[0-9a-f]{2}([:\-])[0-9a-f]{2}(?:\1[0-9a-f]{2}){4}", _norm(name)))
 
 
 def looks_like_server(name: str) -> bool:
@@ -127,13 +119,25 @@ def is_switch_node(node: TopologyNode) -> bool:
     return node.subtype in {"switch", "core_switch", "access_switch"} or product == "switch"
 
 
-def client_label(client: dict[str, Any]) -> str:
-    return str(
-        client.get("description")
-        or client.get("dhcpHostname")
-        or client.get("mdnsName")
-        or client.get("ip")
-        or client.get("mac")
+def client_label(client: dict[str, Any], extra: dict[str, Any] | None = None) -> str:
+    extra = extra or {}
+    lldp = extra.get("lldp") if isinstance(extra.get("lldp"), dict) else {}
+    cdp = extra.get("cdp") if isinstance(extra.get("cdp"), dict) else {}
+    if isinstance(client.get("lldp"), dict) and not lldp:
+        lldp = client["lldp"]
+    if isinstance(client.get("cdp"), dict) and not cdp:
+        cdp = client["cdp"]
+    return (
+        best_identity_name(
+            lldp.get("systemName"),
+            cdp.get("deviceId"),
+            client.get("description"),
+            client.get("dhcpHostname"),
+            client.get("mdnsName"),
+            client.get("deviceTypePrediction"),
+            client.get("ip") or client.get("ipAddress"),
+            client.get("mac") or client.get("macAddress"),
+        )
         or "Client"
     )
 
@@ -455,7 +459,27 @@ def apply_physical_port_attachments(
             debug["occupied_infra"] = int(debug["occupied_infra"]) + 1
             behind = _clients_behind_chassis(remaining, owner)
             debug["downstream_on_occupied"] = int(debug.get("downstream_on_occupied") or 0) + len(behind)
-            if behind and not owner.managed and looks_like_mac(owner.label):
+            nic_names = [
+                client_label(client)
+                for client in unique.values()
+                if client_matches_node(client, owner)
+            ]
+            better = next(
+                (
+                    name
+                    for name in nic_names
+                    if name and not looks_like_mac(name) and not looks_like_vm(name) and not name.lower().startswith("unknown")
+                ),
+                "",
+            )
+            if better and (_is_weak_identity(owner.label) or looks_like_mac(owner.label)):
+                owner.label = better
+                owner.hostname = better
+                if looks_like_server(better):
+                    owner.subtype = "server"
+                    owner.device_class = "server"
+                    owner.type = "neighbor"
+            elif behind and not owner.managed and looks_like_mac(owner.label):
                 owner.label = f"Unknown downstream device – Port {port_key}"
                 owner.hostname = owner.label
             peer_hints.append(
@@ -703,7 +727,7 @@ def apply_entity_merges(
 
         member_set = set(member_ids)
         rewritten: list[TopologyLink] = []
-        seen: set[tuple[str, str, str]] = set()
+        seen: dict[tuple[str, str, str], int] = {}
         for link in links:
             source = survivor_id if link.source in member_set else link.source
             target = survivor_id if link.target in member_set else link.target
@@ -728,21 +752,40 @@ def apply_entity_merges(
                 port_key = f"down:{source}:{target}"
             a, b = sorted((source, target))
             key = (a, b, port_key)
-            if key in seen:
-                continue
-            seen.add(key)
-            rewritten.append(
-                link.model_copy(
-                    update={
-                        "id": f"{source}__{target}__{port_key or link.id}",
-                        "source": source,
-                        "target": target,
-                        "source_port": src_port,
-                        "target_port": tgt_port,
-                        "interface_role": role,
-                    }
-                )
+            copied = link.model_copy(
+                update={
+                    "id": f"{source}__{target}__{port_key or link.id}",
+                    "source": source,
+                    "target": target,
+                    "source_port": src_port,
+                    "target_port": tgt_port,
+                    "interface_role": role,
+                }
             )
+            if key in seen:
+                existing = rewritten[seen[key]]
+                sources = list(existing.discovery_sources or [])
+                for src in list(copied.discovery_sources or []) + [copied.discovery_method, existing.discovery_method]:
+                    if src and src not in sources:
+                        sources.append(src)
+                existing.discovery_sources = sources
+                resolution = dict(existing.identity_resolution or {})
+                for k, value in (copied.identity_resolution or {}).items():
+                    if k not in resolution or resolution[k] in (None, "", {}, []):
+                        resolution[k] = value
+                existing.identity_resolution = resolution
+                for blob, other in (
+                    (existing.source_port, copied.source_port or {}),
+                    (existing.target_port, copied.target_port or {}),
+                ):
+                    if not isinstance(blob, dict):
+                        continue
+                    for k, value in other.items():
+                        if k not in blob or blob[k] in (None, "", {}, []):
+                            blob[k] = value
+                continue
+            seen[key] = len(rewritten)
+            rewritten.append(copied)
         for node_id in member_ids:
             nodes.pop(node_id, None)
         for node in nodes.values():
@@ -752,3 +795,354 @@ def apply_entity_merges(
         nodes[survivor_id] = survivor
         links = rewritten
     return nodes, links
+
+
+def infer_nic_role(port_id: str, cfg: dict[str, Any] | None = None, existing: str = "") -> str:
+    if existing:
+        return str(existing)
+    cfg = cfg or {}
+    hay = f"{port_id} {_norm(cfg.get('name'))} {_norm(cfg.get('type'))}"
+    ptype = _norm(cfg.get("type"))
+    if "sfp" in hay or ptype == "trunk":
+        return "fabric"
+    if any(hint in hay for hint in MGMT_NAME_HINTS) or ptype == "access":
+        return "management"
+    return ""
+
+
+def _is_weak_identity(label: str) -> bool:
+    text = _norm(label)
+    return (not text) or looks_like_mac(label) or text.startswith("unknown downstream") or text in {"client", "unmanaged"}
+
+
+def _is_chassis_candidate(node: TopologyNode) -> bool:
+    if node.managed and node.type == "meraki":
+        return False
+    if node.subtype == "wireless":
+        return False
+    if looks_like_vm(node.label) and node.subtype in {"wired", "client", "wireless"}:
+        return False
+    if node.subtype in {"server", "physical_peer", "unknown_downstream", "unmanaged"}:
+        return True
+    if looks_like_server(node.label) or looks_like_mac(node.label):
+        return True
+    return node.type == "neighbor"
+
+
+def _chassis_name_key(node: TopologyNode) -> str:
+    meta = node.metadata or {}
+    lldp = meta.get("lldp") if isinstance(meta.get("lldp"), dict) else {}
+    cdp = meta.get("cdp") if isinstance(meta.get("cdp"), dict) else {}
+    name = best_identity_name(
+        lldp.get("systemName"),
+        cdp.get("deviceId"),
+        meta.get("description"),
+        meta.get("dhcpHostname"),
+        meta.get("mdnsName"),
+        meta.get("name"),
+        node.hostname,
+        node.label,
+    )
+    return normalize_hostname(name)
+
+
+def _node_oui(node: TopologyNode) -> str:
+    meta = node.metadata or {}
+    lldp = meta.get("lldp") if isinstance(meta.get("lldp"), dict) else {}
+    macs = [
+        meta.get("mac"),
+        meta.get("macAddress"),
+        lldp.get("chassisId"),
+        node.id,
+        node.label,
+    ]
+    for client in meta.get("meraki_clients") or []:
+        if isinstance(client, dict):
+            macs.append(client.get("mac") or client.get("macAddress"))
+    for value in macs:
+        mac = _mac(value)
+        if mac:
+            return mac[:8]
+    return ""
+
+
+def _child_name_keys(node_id: str, nodes: dict[str, TopologyNode], links: list[TopologyLink]) -> set[str]:
+    names: set[str] = set()
+    for link in links:
+        if _norm(link.discovery_method) != "physical_downstream":
+            continue
+        child_id = link.target if link.source == node_id else link.source if link.target == node_id else ""
+        child = nodes.get(child_id)
+        if not child:
+            continue
+        key = normalize_hostname(child.label) or normalize_hostname(child.hostname)
+        if key:
+            names.add(key)
+    meta = (nodes.get(node_id).metadata if node_id in nodes else {}) or {}
+    for client in meta.get("meraki_clients") or []:
+        if isinstance(client, dict):
+            key = normalize_hostname(client_label(client))
+            if key:
+                names.add(key)
+    return names
+
+
+def _switch_attachments(
+    node_id: str,
+    nodes: dict[str, TopologyNode],
+    links: list[TopologyLink],
+) -> list[dict[str, Any]]:
+    found: list[dict[str, Any]] = []
+    seen: set[tuple[str, str]] = set()
+    for link in links:
+        if link.link_type == "wireless":
+            continue
+        if _norm(link.discovery_method) == "physical_downstream":
+            continue
+        for local_id, peer_id, port in (
+            (link.source, link.target, link.source_port or {}),
+            (link.target, link.source, link.target_port or {}),
+        ):
+            if peer_id != node_id:
+                continue
+            local = nodes.get(local_id)
+            if not local or not is_switch_node(local):
+                continue
+            port_id = physical_port_id(port.get("portId"))
+            if not port_id:
+                continue
+            key = (local_id, port_id)
+            if key in seen:
+                continue
+            seen.add(key)
+            found.append(
+                {
+                    "switch_id": local_id,
+                    "port_id": port_id,
+                    "config": dict(port.get("config") or {}),
+                    "role": infer_nic_role(port_id, port.get("config") or {}, link.interface_role),
+                }
+            )
+    return found
+
+
+def _union_find_merge(parent: dict[str, str], a: str, b: str) -> None:
+    def find(x: str) -> str:
+        while parent[x] != x:
+            parent[x] = parent[parent[x]]
+            x = parent[x]
+        return x
+
+    ra, rb = find(a), find(b)
+    if ra != rb:
+        parent[rb] = ra
+
+
+def detect_duplicate_chassis(
+    nodes: dict[str, TopologyNode],
+    links: list[TopologyLink],
+) -> list[dict[str, Any]]:
+    """Group unmanaged physical NICs that are the same chassis."""
+    chassis = [node for node in nodes.values() if _is_chassis_candidate(node)]
+    if len(chassis) < 2:
+        return []
+    ids = [node.id for node in chassis]
+    parent = {node_id: node_id for node_id in ids}
+    reasons: dict[tuple[str, str], str] = {}
+
+    def mark(a: str, b: str, reason: str) -> None:
+        if a == b:
+            return
+        key = (a, b) if a < b else (b, a)
+        reasons[key] = reason
+        _union_find_merge(parent, a, b)
+
+    attachments = {node.id: _switch_attachments(node.id, nodes, links) for node in chassis}
+    name_key = {node.id: _chassis_name_key(node) for node in chassis}
+    oui = {node.id: _node_oui(node) for node in chassis}
+    children = {node.id: _child_name_keys(node.id, nodes, links) for node in chassis}
+
+    by_name: dict[str, list[str]] = {}
+    for node in chassis:
+        key = name_key[node.id]
+        if key:
+            by_name.setdefault(key, []).append(node.id)
+    for members in by_name.values():
+        if len(members) < 2:
+            continue
+        by_switch: dict[str, list[str]] = {}
+        for nid in members:
+            for att in attachments[nid]:
+                by_switch.setdefault(str(att["switch_id"]), []).append(nid)
+        for switch_members in by_switch.values():
+            unique = sorted(set(switch_members))
+            if len(unique) < 2:
+                continue
+            ports = {att["port_id"] for nid in unique for att in attachments[nid]}
+            if len(ports) >= 2 or len(unique) >= 2:
+                for extra in unique[1:]:
+                    mark(unique[0], extra, "same_hostname_correlated_nics")
+
+    by_oui_switch: dict[tuple[str, str], list[str]] = {}
+    for node in chassis:
+        prefix = oui[node.id]
+        if not prefix:
+            continue
+        for att in attachments[node.id]:
+            by_oui_switch.setdefault((prefix, str(att["switch_id"])), []).append(node.id)
+    for members in by_oui_switch.values():
+        unique = sorted(set(members))
+        if len(unique) < 2:
+            continue
+        serverish = [
+            nid
+            for nid in unique
+            if looks_like_server(nodes[nid].label)
+            or nodes[nid].subtype in {"server", "physical_peer", "unknown_downstream"}
+            or looks_like_mac(nodes[nid].label)
+            or children[nid]
+        ]
+        if len(serverish) < 2 and not any(looks_like_server(nodes[nid].label) for nid in unique):
+            continue
+        ports = {att["port_id"] for nid in unique for att in attachments[nid]}
+        if len(ports) < 2:
+            continue
+        for extra in unique[1:]:
+            mark(unique[0], extra, "management_fabric_nic_oui")
+
+    by_switch: dict[str, list[str]] = {}
+    for node in chassis:
+        for att in attachments[node.id]:
+            by_switch.setdefault(str(att["switch_id"]), []).append(node.id)
+    for switch_id, members in by_switch.items():
+        unique = sorted(set(members))
+        fabric = []
+        access = []
+        for nid in unique:
+            roles = {att["role"] for att in attachments[nid] if att["switch_id"] == switch_id}
+            ports_cfg = [att for att in attachments[nid] if att["switch_id"] == switch_id]
+            is_fabric = "fabric" in roles or any(_norm((att["config"] or {}).get("type")) == "trunk" for att in ports_cfg)
+            is_mgmt = "management" in roles or any(_norm((att["config"] or {}).get("type")) == "access" for att in ports_cfg)
+            if is_fabric and (looks_like_mac(nodes[nid].label) or nodes[nid].subtype in {"unknown_downstream", "physical_peer", "unmanaged", "server"} or children[nid]):
+                fabric.append(nid)
+            if is_mgmt and (looks_like_server(nodes[nid].label) or any(h in _norm(nodes[nid].label) for h in MGMT_NAME_HINTS)):
+                access.append(nid)
+        if not fabric or not access:
+            continue
+        for fab in fabric:
+            named_access = []
+            for acc in access:
+                if acc == fab:
+                    continue
+                acc_key = name_key[acc]
+                fab_key = name_key[fab]
+                if acc_key and fab_key and acc_key != fab_key:
+                    continue
+                if acc_key and fab_key and acc_key == fab_key:
+                    named_access.append(acc)
+                    continue
+                if oui[acc] and oui[fab] and oui[acc] == oui[fab]:
+                    named_access.append(acc)
+                    continue
+                if children[acc] and children[fab] and children[acc] & children[fab]:
+                    named_access.append(acc)
+                    continue
+                if any(h in _norm(nodes[acc].label) for h in MGMT_NAME_HINTS):
+                    named_access.append(acc)
+            if not named_access and len(access) == 1 and access[0] != fab:
+                # Single named server NIC + fabric MAC/unknown on the same switch.
+                acc = access[0]
+                acc_key = name_key[acc]
+                fab_key = name_key[fab]
+                if not (acc_key and fab_key and acc_key != fab_key):
+                    named_access = [acc]
+            for acc in named_access:
+                mark(acc, fab, "management_fabric_relationship")
+
+    for node in chassis:
+        extra = node.metadata or {}
+        for mid in extra.get("merged_from") or []:
+            if mid in parent:
+                mark(node.id, str(mid), "existing_chassis_merge")
+
+    groups: dict[str, list[str]] = {}
+    for nid in ids:
+        root = nid
+        while parent[root] != root:
+            root = parent[root]
+        groups.setdefault(root, []).append(nid)
+    candidates: list[dict[str, Any]] = []
+    for members in groups.values():
+        unique = sorted(set(members))
+        if len(unique) < 2:
+            continue
+        pair_reasons = sorted(
+            {
+                reasons[key]
+                for key in reasons
+                if key[0] in unique and key[1] in unique
+            }
+        )
+        hostnames = sorted({name_key[nid] for nid in unique if name_key[nid]})
+        candidates.append(
+            {
+                "node_ids": unique,
+                "labels": [nodes[nid].label for nid in unique],
+                "hostname": hostnames[0] if len(hostnames) == 1 else "",
+                "reasons": pair_reasons,
+                "merged": False,
+            }
+        )
+    return candidates
+
+
+def collapse_duplicate_chassis(
+    nodes: dict[str, TopologyNode],
+    links: list[TopologyLink],
+) -> tuple[dict[str, TopologyNode], list[TopologyLink], list[dict[str, Any]]]:
+    """Collapse detected duplicate chassis into one node; keep distinct NIC edges."""
+    candidates = detect_duplicate_chassis(nodes, links)
+    merges: list[dict[str, Any]] = []
+    for group in candidates:
+        member_ids = [nid for nid in group["node_ids"] if nid in nodes]
+        if len(member_ids) < 2:
+            continue
+        child_counts = {nid: len(_child_name_keys(nid, nodes, links)) for nid in member_ids}
+
+        def score(nid: str) -> tuple[int, int, str]:
+            node = nodes[nid]
+            named = 0 if _is_weak_identity(node.label) else 100
+            server = 50 if looks_like_server(node.label) else 0
+            return (named + server + min(child_counts[nid], 20), child_counts[nid], nid)
+
+        survivor_id = sorted(member_ids, key=score, reverse=True)[0]
+        interfaces: list[dict[str, Any]] = []
+        for nid in member_ids:
+            for att in _switch_attachments(nid, nodes, links):
+                interfaces.append(
+                    {
+                        "switch_serial": att["switch_id"],
+                        "port_id": att["port_id"],
+                        "role": att["role"],
+                        "member_id": nid,
+                    }
+                )
+        labels = [nodes[nid].label for nid in member_ids]
+        label = best_identity_name(*labels) or nodes[survivor_id].label
+        if _is_weak_identity(label):
+            label = next((item for item in labels if not _is_weak_identity(item)), label)
+        merges.append(
+            {
+                "survivor_id": survivor_id,
+                "member_ids": [nid for nid in member_ids if nid != survivor_id],
+                "label": label,
+                "device_class": "server" if any(looks_like_server(nodes[nid].label) or nodes[nid].device_class == "server" for nid in member_ids) else nodes[survivor_id].device_class,
+                "interfaces": interfaces,
+            }
+        )
+        group["merged"] = True
+        group["survivor_id"] = survivor_id
+        group["label"] = label
+    if merges:
+        nodes, links = apply_entity_merges(nodes, links, merges)
+    return nodes, links, candidates

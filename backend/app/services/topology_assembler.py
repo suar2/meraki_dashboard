@@ -14,6 +14,7 @@ from app.models.schemas import TopologyLink, TopologyNode
 from app.services.evidence import stamp_link_evidence
 from app.services.identity import (
     ManagedInventory,
+    best_identity_name,
     extract_end_derived_id,
     extract_end_port,
     hierarchy_rank,
@@ -21,6 +22,7 @@ from app.services.identity import (
     is_derived_id,
     is_wireless_client,
     normalize_mac,
+    physical_port_id,
     resolve_link_end,
     source_rank,
     unmanaged_node_id,
@@ -28,6 +30,7 @@ from app.services.identity import (
 from app.services.physical_topology import (
     apply_entity_merges,
     apply_physical_port_attachments,
+    collapse_duplicate_chassis,
     prune_orphan_nodes,
 )
 from app.services.switchport_client_builder import (
@@ -96,7 +99,7 @@ def _infer_neighbor_subtype(node_data: dict[str, Any], end_data: dict[str, Any])
         return "switch"
     if any(k in searchable for k in ["camera", "mv"]):
         return "camera"
-    if any(k in searchable for k in ["server", "srv", "esxi", "vm", "nas", "synology", "windows", "linux"]):
+    if any(k in searchable for k in ["server", "srv", "esxi", "proxmox", "hyper-v", "nas", "synology", "vm", "windows", "linux"]):
         return "server"
     return "unmanaged"
 
@@ -108,51 +111,134 @@ def _next_position(node_map: dict[str, TopologyNode], positions: dict[str, dict[
     return {"x": float((idx % 40) * 130), "y": float((idx // 40) * 60)}
 
 
+def _specific_ports(link: TopologyLink) -> dict[str, str]:
+    ports: dict[str, str] = {}
+    for node_id, blob in ((link.source, link.source_port or {}), (link.target, link.target_port or {})):
+        pid = physical_port_id((blob or {}).get("portId"))
+        if node_id and pid:
+            ports[node_id] = pid
+    return ports
+
+
+def _ports_conflict(left: dict[str, str], right: dict[str, str]) -> bool:
+    for node_id, port in left.items():
+        other = right.get(node_id)
+        if other and other != port:
+            return True
+    return False
+
+
+def _cluster_ports(cluster: list[TopologyLink]) -> dict[str, str]:
+    merged: dict[str, str] = {}
+    for link in cluster:
+        for node_id, port in _specific_ports(link).items():
+            merged.setdefault(node_id, port)
+    return merged
+
+
+def _merge_port_blob(base: dict[str, Any], extra: dict[str, Any]) -> dict[str, Any]:
+    out = dict(base or {})
+    for key, value in (extra or {}).items():
+        if key in {"config", "status", "lldp", "cdp"} and isinstance(value, dict):
+            current = dict(out.get(key) or {}) if isinstance(out.get(key), dict) else {}
+            for inner_key, inner_val in value.items():
+                if inner_key not in current or current[inner_key] in (None, "", {}, []):
+                    current[inner_key] = inner_val
+            out[key] = current
+            continue
+        if key not in out or out[key] in (None, "", {}, []):
+            out[key] = value
+    return out
+
+
+def _fuse_link_cluster(cluster: list[TopologyLink]) -> TopologyLink:
+    cluster = sorted(cluster, key=lambda item: source_rank(item), reverse=True)
+    winner = cluster[0]
+    sources: list[str] = []
+    records: list[dict[str, Any]] = []
+    resolution: dict[str, Any] = dict(winner.identity_resolution or {})
+    source_port = dict(winner.source_port or {})
+    target_port = dict(winner.target_port or {})
+    health = winner.health
+    mismatches = list(winner.mismatches or [])
+    faults = list(winner.faults or [])
+    for item in cluster:
+        for src in list(item.discovery_sources or []) + [item.discovery_method]:
+            if src and src not in sources:
+                sources.append(src)
+        if item.identity_resolution:
+            records.append(dict(item.identity_resolution))
+            for key, value in item.identity_resolution.items():
+                if key not in resolution or resolution[key] in (None, "", {}, []):
+                    resolution[key] = value
+        source_port = _merge_port_blob(source_port, item.source_port or {})
+        target_port = _merge_port_blob(target_port, item.target_port or {})
+        if item.health == "critical" or health == "critical":
+            health = "critical"
+        elif item.health == "warning" and health != "critical":
+            health = "warning"
+        for issue in item.mismatches or []:
+            if issue not in mismatches:
+                mismatches.append(issue)
+        for issue in item.faults or []:
+            if issue not in faults:
+                faults.append(issue)
+    if records:
+        resolution["records"] = records
+    status = source_port.get("status") if isinstance(source_port.get("status"), dict) else {}
+    lldp = status.get("lldp") or source_port.get("lldp") or resolution.get("lldp")
+    cdp = status.get("cdp") or source_port.get("cdp") or resolution.get("cdp")
+    if lldp and "lldp" not in resolution:
+        resolution["lldp"] = lldp
+    if cdp and "cdp" not in resolution:
+        resolution["cdp"] = cdp
+    if status and "port_status" not in resolution:
+        resolution["port_status"] = status
+    winner.discovery_sources = sources
+    winner.identity_resolution = resolution
+    winner.source_port = source_port
+    winner.target_port = target_port
+    winner.health = health
+    winner.mismatches = mismatches
+    winner.faults = faults
+    return winner
+
+
 def merge_duplicate_links(links: list[TopologyLink]) -> list[TopologyLink]:
-    """One canonical physical edge; union discovery_sources and identity evidence."""
-
-    def key(link: TopologyLink) -> tuple[str, str, str, str]:
-        left, right = sorted((link.source, link.target))
-        ports = [
-            _canonical_port_id(str((link.source_port or {}).get("portId") or "")),
-            _canonical_port_id(str((link.target_port or {}).get("portId") or "")),
-        ]
-        usable = [
-            port
-            for port in ports
-            if port and port.lower() not in {"unknown", "uplink", "wired", "down", "none"}
-        ]
-        numeric = [port for port in usable if port.isdigit()]
-        port_key = numeric[0] if numeric else (usable[0] if usable else "")
-        return (left, right, port_key, link.link_type)
-
-    grouped: dict[tuple[str, str, str, str], list[TopologyLink]] = defaultdict(list)
+    """One Cytoscape edge per physical chassis+port identity; union evidence sources."""
+    grouped: dict[tuple[str, str, str], list[TopologyLink]] = defaultdict(list)
+    passthrough: list[TopologyLink] = []
     for link in links:
-        grouped[key(link)].append(link)
-    merged: list[TopologyLink] = []
+        if link.link_type == "wireless":
+            passthrough.append(link)
+            continue
+        pair = tuple(sorted((link.source, link.target)))
+        grouped[(pair[0], pair[1], link.link_type)].append(link)
+    merged: list[TopologyLink] = list(passthrough)
     for group in grouped.values():
-        group.sort(key=lambda item: source_rank(item), reverse=True)
-        winner = group[0]
-        sources: list[str] = []
-        resolution: dict[str, Any] = dict(winner.identity_resolution or {})
-        source_port = dict(winner.source_port or {})
-        target_port = dict(winner.target_port or {})
-        for item in group:
-            for src in list(item.discovery_sources or []) + [item.discovery_method]:
-                if src and src not in sources:
-                    sources.append(src)
-            for k, value in (item.identity_resolution or {}).items():
-                if k not in resolution or resolution[k] in (None, "", {}, []):
-                    resolution[k] = value
-            for blob, other in ((source_port, item.source_port or {}), (target_port, item.target_port or {})):
-                for k, value in other.items():
-                    if k not in blob or blob[k] in (None, "", {}, []):
-                        blob[k] = value
-        winner.discovery_sources = sources
-        winner.identity_resolution = resolution
-        winner.source_port = source_port
-        winner.target_port = target_port
-        merged.append(winner)
+        ordered = sorted(
+            group,
+            key=lambda item: (len(_specific_ports(item)), source_rank(item)),
+            reverse=True,
+        )
+        clusters: list[list[TopologyLink]] = []
+        for link in ordered:
+            ports = _specific_ports(link)
+            best_idx: int | None = None
+            best_overlap = -1
+            for idx, cluster in enumerate(clusters):
+                cports = _cluster_ports(cluster)
+                if _ports_conflict(ports, cports):
+                    continue
+                overlap = len(set(ports.items()) & set(cports.items()))
+                if overlap > best_overlap:
+                    best_overlap = overlap
+                    best_idx = idx
+            if best_idx is None:
+                clusters.append([link])
+                continue
+            clusters[best_idx].append(link)
+        merged.extend(_fuse_link_cluster(cluster) for cluster in clusters)
     return merged
 
 
@@ -193,6 +279,7 @@ class TopologyAssembler:
         self.connected_by_port: dict[tuple[str, str], list[dict[str, str]]] = {}
         self.port_peer_hints: list[dict[str, Any]] = []
         self.sw_port_debug: dict[str, Any] = {}
+        self.chassis_debug: list[dict[str, Any]] = []
         self.ap_serials: set[str] = set()
         self.switch_serials: set[str] = set()
 
@@ -206,6 +293,7 @@ class TopologyAssembler:
         self._attach_wireless_clients()
         self._attach_wired_clients()
         self._apply_merges()
+        self._collapse_duplicate_chassis()
         self._orient_hierarchy()
         self.links = merge_duplicate_links(self.links)
         for link in self.links:
@@ -219,6 +307,7 @@ class TopologyAssembler:
             "unresolved": self.unresolved,
             "port_peer_hints": self.port_peer_hints,
             "sw_port_debug": self.sw_port_debug,
+            "chassis_debug": self.chassis_debug,
             "switch_serials": self.switch_serials,
             "clients_by_switch_port": {
                 f"{serial}:{port}": [dict(c) for c in group]
@@ -530,7 +619,15 @@ class TopologyAssembler:
                 continue
             node_id = build_client_id(client)
             if node_id not in self.node_map:
-                label = str(client.get("description") or client.get("user") or client.get("mac") or "Wireless client")
+                label = best_identity_name(
+                    client.get("description"),
+                    client.get("dhcpHostname"),
+                    client.get("mdnsName"),
+                    client.get("deviceTypePrediction"),
+                    client.get("user"),
+                    client.get("ip"),
+                    client.get("mac"),
+                ) or "Wireless client"
                 self.node_map[node_id] = TopologyNode(
                     id=node_id,
                     type="client",
@@ -640,6 +737,9 @@ class TopologyAssembler:
 
     def _apply_merges(self) -> None:
         self.node_map, self.links = apply_entity_merges(self.node_map, self.links, self.entity_merges)
+
+    def _collapse_duplicate_chassis(self) -> None:
+        self.node_map, self.links, self.chassis_debug = collapse_duplicate_chassis(self.node_map, self.links)
 
     def _node_rank(self, node_id: str) -> int:
         node = self.node_map.get(node_id)

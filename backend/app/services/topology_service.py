@@ -59,14 +59,20 @@ class TopologyService:
 
     def _node_hostname(self, node: TopologyNode) -> str:
         meta = node.metadata or {}
+        lldp = self._as_dict(meta.get("lldp"))
+        cdp = self._as_dict(meta.get("cdp"))
         label = human_label(
-            node.hostname,
-            meta.get("hostname"),
+            lldp.get("systemName"),
+            cdp.get("deviceId"),
             meta.get("name"),
+            meta.get("description"),
             meta.get("dhcpHostname"),
             meta.get("mdnsName"),
-            meta.get("description"),
+            meta.get("deviceTypePrediction"),
+            node.hostname,
             node.label,
+            meta.get("ip") or node.management_ip,
+            meta.get("mac"),
         )
         if label:
             return label
@@ -580,6 +586,7 @@ class TopologyService:
             "port_peer_hint_count": len(port_peer_hints),
             "clients_by_switch_port_counts": {key: len(val) for key, val in clients_by_sp.items()},
             "unresolved_nodes": assembled["unresolved"],
+            "duplicate_chassis": assembled.get("chassis_debug") or [],
         }
         summary = TopologySummary(
             total_nodes=len(node_map),

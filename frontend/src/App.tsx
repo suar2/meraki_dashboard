@@ -286,9 +286,10 @@ export function App() {
 
   const diagnostics = React.useMemo<TopologyDiagnostics | null>(() => {
     if (!graph) return null;
+    const local = computeDiagnostics(graph);
     const fromDebug = graph.topology_debug?.diagnostics as TopologyDiagnostics | undefined;
-    if (fromDebug && typeof fromDebug.physical_edges === "number") return fromDebug;
-    return computeDiagnostics(graph);
+    if (fromDebug && typeof fromDebug.physical_edges === "number") return { ...local, ...fromDebug };
+    return local;
   }, [graph]);
 
   const labChecks = React.useMemo(() => (graph ? validateExpectations(graph) : null), [graph]);

@@ -7,6 +7,8 @@ from dataclasses import dataclass, field
 from typing import Any
 
 _MAC_HEX = re.compile(r"[^0-9a-f]")
+_IPV4 = re.compile(r"^(?:\d{1,3}\.){3}\d{1,3}$")
+GENERIC_PORTS = frozenset({"", "unknown", "uplink", "wired", "down", "none", "n/a", "null", "ethernet"})
 
 
 def normalize_mac(value: Any) -> str:
@@ -190,30 +192,116 @@ class ManagedInventory:
         return hit
 
 
+def looks_like_mac(value: Any) -> bool:
+    if isinstance(value, dict):
+        return False
+    text = str(value or "").strip()
+    if not text:
+        return False
+    if normalize_mac(text):
+        return True
+    compact = _MAC_HEX.sub("", text.lower())
+    return len(compact) == 12 and all(ch in "0123456789abcdef" for ch in compact)
+
+
+def looks_like_ip(value: Any) -> bool:
+    text = str(value or "").strip()
+    return bool(_IPV4.match(text))
+
+
+def canonical_port_id(port_id: Any) -> str:
+    text = str(port_id or "").strip()
+    if not text:
+        return text
+    low = text.lower()
+    if low.startswith("port") and low[4:].isdigit():
+        return str(int(low[4:]))
+    if text.isdigit():
+        return str(int(text))
+    return text
+
+
+def is_generic_port(port_id: Any) -> bool:
+    pid = canonical_port_id(port_id)
+    return (not pid) or pid.lower() in GENERIC_PORTS
+
+
+def physical_port_id(port_id: Any) -> str:
+    """Canonical port id, empty when the value is not a real interface identity."""
+    pid = canonical_port_id(port_id)
+    return "" if is_generic_port(pid) else pid
+
+
+def normalize_hostname(value: Any) -> str:
+    """Stable chassis hostname key: domain stripped, Meraki prefix stripped, alnum only."""
+    text = str(value or "").strip().lower()
+    if not text or looks_like_mac(text) or looks_like_ip(text):
+        return ""
+    if text.startswith("unknown downstream"):
+        return ""
+    if " - " in text:
+        text = text.split(" - ")[-1].strip()
+    if "." in text and not looks_like_ip(text):
+        text = text.split(".")[0]
+    return re.sub(r"[^a-z0-9]+", "", text)
+
+
+def _flatten_name_candidate(value: Any) -> list[Any]:
+    if isinstance(value, dict):
+        device = topology_node_device(value)
+        discovered = value.get("discovered") if isinstance(value.get("discovered"), dict) else {}
+        lldp = discovered.get("lldp") if isinstance(discovered.get("lldp"), dict) else {}
+        if not lldp and isinstance(value.get("lldp"), dict):
+            lldp = value.get("lldp") or {}
+        cdp = discovered.get("cdp") if isinstance(discovered.get("cdp"), dict) else {}
+        if not cdp and isinstance(value.get("cdp"), dict):
+            cdp = value.get("cdp") or {}
+        return [
+            device.get("name"),
+            lldp.get("systemName"),
+            cdp.get("deviceId"),
+            cdp.get("platform"),
+            value.get("description"),
+            value.get("dhcpHostname"),
+            value.get("mdnsName"),
+            value.get("deviceTypePrediction"),
+            value.get("ip") or value.get("ipAddress") or device.get("lanIp"),
+            value.get("mac") or device.get("mac") or lldp.get("chassisId"),
+        ]
+    return [value]
+
+
+def best_identity_name(*candidates: Any) -> str:
+    """Resolve a visible name. Raw MAC is the last fallback.
+
+    Order: managed/LLDP/CDP/description/DHCP/mDNS/deviceTypePrediction, then IP, then MAC.
+    """
+    skipped_ip: list[str] = []
+    skipped_mac: list[str] = []
+    for candidate in candidates:
+        for value in _flatten_name_candidate(candidate):
+            text = _first(value)
+            if not text or is_derived_id(text) or (text.isdigit() and len(text) >= 6):
+                continue
+            if looks_like_mac(text):
+                skipped_mac.append(normalize_mac(text) or text)
+                continue
+            if looks_like_ip(text):
+                skipped_ip.append(text)
+                continue
+            if text.lower() in {"client", "unknown", "unnamed"}:
+                continue
+            return text
+    if skipped_ip:
+        return skipped_ip[0]
+    if skipped_mac:
+        return skipped_mac[0]
+    return ""
+
+
 def human_label(*candidates: Any) -> str:
     """Never return a numeric topology derivedId as a visible hostname."""
-    for value in candidates:
-        if isinstance(value, dict):
-            device = topology_node_device(value)
-            discovered = value.get("discovered") if isinstance(value.get("discovered"), dict) else {}
-            lldp = discovered.get("lldp") if isinstance(discovered.get("lldp"), dict) else {}
-            cdp = discovered.get("cdp") if isinstance(discovered.get("cdp"), dict) else {}
-            nested = human_label(
-                device.get("name"),
-                lldp.get("systemName"),
-                cdp.get("deviceId"),
-                cdp.get("platform"),
-                value.get("mac"),
-                device.get("mac"),
-                lldp.get("chassisId"),
-            )
-            if nested:
-                return nested
-            continue
-        text = _first(value)
-        if text and not is_derived_id(text) and not (text.isdigit() and len(text) >= 6):
-            return text
-    return ""
+    return best_identity_name(*candidates)
 
 
 def unmanaged_node_id(*, mac: Any = None, label: Any = None, derived_id: Any = None) -> str:

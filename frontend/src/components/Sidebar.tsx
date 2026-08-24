@@ -273,6 +273,9 @@ export function Sidebar({
               <div><dt>Low confidence</dt><dd>{diagnostics.low_confidence}</dd></div>
               <div><dt>Unresolved nodes</dt><dd>{diagnostics.unresolved_nodes}</dd></div>
               <div><dt>Duplicate identities</dt><dd>{diagnostics.duplicate_identities}</dd></div>
+              <div><dt>Duplicate chassis</dt><dd>{diagnostics.duplicate_chassis_candidates ?? 0}</dd></div>
+              <div><dt>Duplicate edges</dt><dd>{diagnostics.duplicate_physical_edges ?? 0}</dd></div>
+              <div><dt>Unresolved identity</dt><dd>{diagnostics.unresolved_identity_count ?? 0}</dd></div>
               <div><dt>Orphans</dt><dd>{diagnostics.orphans}</dd></div>
             </dl>
             {labChecks && labChecks.applicable > 0 && (

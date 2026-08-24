@@ -1,3 +1,4 @@
+import { computeDiagnostics } from "./diagnostics";
 import { SAMPLE_GRAPH } from "../sampleTopology";
 import { validateExpectations } from "./liveExpectations";
 import { focusKeepIds, presentGraph } from "./presentGraph";
@@ -140,5 +141,21 @@ assert(
   collapsedWifi.nodes.some((n) => n.subtype === "wireless_group"),
   "physical+clients still emits a single wireless group at 1,000 clients"
 );
+
+const diag = computeDiagnostics(SAMPLE_GRAPH);
+assert(typeof diag.duplicate_chassis_candidates === "number", "diagnostics expose duplicate chassis candidates");
+assert(typeof diag.duplicate_physical_edges === "number", "diagnostics expose duplicate physical edges");
+assert(typeof diag.unresolved_identity_count === "number", "diagnostics expose unresolved identity count");
+assert(diag.duplicate_physical_edges === 0, "sample graph has no duplicate physical evidence edges");
+const fwMs = SAMPLE_GRAPH.links.filter((l) => {
+  const pair = new Set([l.source, l.target]);
+  return pair.has("Q2XX-MX-0001") && pair.has("Q2XX-MS-0001") && l.link_type === "wired";
+});
+const msMr = SAMPLE_GRAPH.links.filter((l) => {
+  const pair = new Set([l.source, l.target]);
+  return pair.has("Q2XX-MS-0001") && pair.has("Q2XX-AP-0001") && l.link_type === "wired";
+});
+assert(fwMs.length === 1, "sample FW-01↔MS130 is a single physical edge");
+assert(msMr.length === 1, "sample MS130↔MR36 is a single physical edge");
 
 console.log("topology presentation regressions ok");
