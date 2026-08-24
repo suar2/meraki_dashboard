@@ -33,7 +33,8 @@ Required/standardized variables:
 - `LOG_LEVEL`: `DEBUG|INFO|WARNING|ERROR`
 - `FRONTEND_PORT`: frontend dev server port
 - `BACKEND_PORT`: backend API port
-- `TOPOLOGY_REFRESH_SECONDS`: refresh-related interval for topology/client windows
+- `TOPOLOGY_REFRESH_SECONDS`: cache refresh interval for topology builds
+- `MERAKI_CLIENT_LOOKBACK_SECONDS`: Meraki client history window (default `86400` / 24 hours; Cisco allows up to 31 days). This is independent of the cache TTL — do not derive it from the refresh interval.
 - `REQUEST_TIMEOUT_SECONDS`: per-request timeout to Meraki APIs
 - `MAX_RETRIES`: retry count for transient/rate-limit failures
 - `RETRY_BACKOFF_SECONDS`: exponential retry base delay
@@ -153,9 +154,10 @@ On import, Pydantic loads `.env` from the process working directory and validate
 - Pulls LLDP/CDP-derived link layer topology and creates wired links.
 - Adds non-Meraki discovered peers as unmanaged nodes.
 - Pulls wireless client associations and hangs them under the AP (`recentDeviceSerial`), not under the switch uplink.
-- Builds **physical topology** (what chassis is on each switch port, and what sits behind it) using this authority order: managed Meraki identity → LLDP/CDP → switch client table → downstream inference. Unidentified multi-MAC ports become a single `Unknown downstream device – Port N` still linked to that port. Orphan nodes are never rendered.
+- Fetches Meraki clients over a **24-hour** lookback (`MERAKI_CLIENT_LOOKBACK_SECONDS`) so port groups match Dashboard, not a 10-minute slice.
+- Builds **physical topology** (what chassis is on each switch port, and what sits behind it) using this authority order: managed Meraki identity → LLDP/CDP → switch client table → downstream inference. **Every wired client learned on a port is retained.** If a neighbor already owns the jack, extra MACs hang behind that chassis; they are never collapsed into a single NIC MAC. Unidentified multi-MAC ports become a chassis still linked to that port, with the full client group underneath. Orphan nodes are never rendered.
 - Switch **port diagrams** (all physical interfaces, including unused) stay on the node/link detail panel. Topology only draws meaningful connections. Clicking a topology link highlights the matching jack.
-- Multi-NIC chassis (for example server management + fabric) can be merged with **Merge as same physical device**. The association is persisted per org/network and reapplied on the next topology build.
+- Multi-NIC chassis (for example server management + fabric) can be merged with **Merge as same physical device**. Merge joins the NICs and **keeps the downstream client group** under the server. The association is persisted per org/network and reapplied on the next topology build.
 - Pulls switch port configuration + switch port status for both sides when managed, then validates link parity.
 
 ## Validation/rule engine

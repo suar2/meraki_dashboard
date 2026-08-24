@@ -36,7 +36,7 @@ class TopologyService:
         self.entity_merges = EntityMergeService(store)
 
     def _cache_name(self, org_id: str, network_id: str) -> str:
-        return f"cache_topology_v6_{org_id}_{network_id}.json"
+        return f"cache_topology_v7_{org_id}_{network_id}.json"
 
     def invalidate_cache(self, org_id: str, network_id: str) -> None:
         path = self.store.base / self._cache_name(org_id, network_id)
@@ -621,7 +621,7 @@ class TopologyService:
         except MerakiAPIError as exc:
             logger.warning("Topology endpoint failed for network %s: %s", network_id, exc)
             topology = {"links": []}
-        client_timespan = max(settings.topology_refresh_seconds * 10, 300)
+        client_timespan = settings.meraki_client_lookback_seconds
         try:
             clients = await self.meraki.get_network_clients(network_id, timespan=client_timespan)
         except MerakiAPIError as exc:
@@ -777,7 +777,7 @@ class TopologyService:
                 linked_ports.add((b_node, b_port_key, a_node))
 
         meraki_index = index_managed_devices(node_map)
-        for client in clients[:2000]:
+        for client in clients:
             if not (client.get("recentDeviceSerial") and client.get("ssid")):
                 continue
             if resolve_managed_device(client, meraki_index):
@@ -1010,8 +1010,10 @@ class TopologyService:
         topology_debug: dict[str, Any] = {
             **sw_port_debug,
             "meraki_client_total": len(clients),
+            "client_lookback_seconds": client_timespan,
             "switch_serials": sorted(switch_serials),
             "port_peer_hint_count": len(port_peer_hints),
+            "clients_by_switch_port_counts": {key: len(val) for key, val in clients_by_sp.items()},
         }
         summary = TopologySummary(
             total_nodes=len(node_map),

@@ -59,6 +59,7 @@ Copy `.env.example` to `.env`. Required variables:
 | `LOG_LEVEL` | `DEBUG\|INFO\|WARNING\|ERROR` |
 | `FRONTEND_PORT` / `BACKEND_PORT` | Service ports |
 | `TOPOLOGY_REFRESH_SECONDS` | Topology cache refresh interval |
+| `MERAKI_CLIENT_LOOKBACK_SECONDS` | Meraki client history window (default 86400) |
 | `CACHE_TTL_SECONDS` | Topology cache TTL |
 | `REQUEST_TIMEOUT_SECONDS` | Per-request timeout for Meraki API calls |
 | `MAX_RETRIES` / `RETRY_BACKOFF_SECONDS` | Retry config for transient/rate-limit failures |

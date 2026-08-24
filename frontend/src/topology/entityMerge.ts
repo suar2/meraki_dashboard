@@ -63,8 +63,12 @@ export function applyLocalEntityMerge(graph: TopologyGraph, payload: EntityMerge
         blob.label = found;
       }
     }
-    const portKey = canonicalPort(srcPort.portId || tgtPort.portId);
-    const dedupe = [source, target, portKey].sort().join("|");
+    const method = String(link.discovery_method || "");
+    const portKey =
+      method === "physical_downstream"
+        ? `down:${source}:${target}`
+        : canonicalPort(srcPort.portId || tgtPort.portId);
+    const dedupe = `${source}|${target}|${portKey}`;
     if (seen.has(dedupe)) continue;
     seen.add(dedupe);
     links.push({

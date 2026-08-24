@@ -18,6 +18,7 @@ class Settings(BaseSettings):
     frontend_port: int = Field(default=43123, alias="FRONTEND_PORT")
     log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR"] = Field(default="INFO", alias="LOG_LEVEL")
     topology_refresh_seconds: int = Field(default=60, alias="TOPOLOGY_REFRESH_SECONDS")
+    meraki_client_lookback_seconds: int = Field(default=86400, alias="MERAKI_CLIENT_LOOKBACK_SECONDS")
     data_dir: str = Field(default="./backend/data", alias="DATA_DIR")
     request_timeout_seconds: int = Field(default=25, alias="REQUEST_TIMEOUT_SECONDS")
     max_retries: int = Field(default=3, alias="MAX_RETRIES")
@@ -44,6 +45,16 @@ class Settings(BaseSettings):
         if not value:
             raise ValueError("SECRET_KEY is required.")
         return value
+
+    @field_validator("meraki_client_lookback_seconds", mode="before")
+    @classmethod
+    def clamp_client_lookback(cls, value: object) -> int:
+        try:
+            seconds = int(value) if value is not None else 86400
+        except (TypeError, ValueError):
+            seconds = 86400
+        # Meraki Get Network Clients: minimum useful window 5 minutes, maximum 31 days.
+        return max(300, min(seconds, 2_678_400))
 
     @model_validator(mode="after")
     def validate_production_secret(self) -> "Settings":

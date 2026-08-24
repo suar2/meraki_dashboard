@@ -202,6 +202,115 @@ class PhysicalTopologyTests(unittest.TestCase):
         children = {lk.target for lk in links if lk.source == "physical-SW1-14"}
         self.assertTrue({"client-vm1", "client-vm2", "client-vm3"} <= children)
 
+    def test_lldp_mac_on_trunk_keeps_all_named_clients_behind_it(self):
+        fabric = _node(
+            id="neighbor-fab",
+            type="neighbor",
+            subtype="unmanaged",
+            label="98:b7:85:22:f8:79",
+            managed=False,
+            metadata={"lldp": {"chassisId": "98:b7:85:22:f8:79"}, "mac": "98:b7:85:22:f8:79"},
+        )
+        extra_links = [
+            _link(
+                id="sw-fab",
+                source="SW1",
+                target="neighbor-fab",
+                discovery_method="lldp_cdp_inferred",
+                source_port={"serial": "SW1", "portId": "14"},
+                target_port={"serial": "neighbor-fab", "portId": "sfp"},
+            )
+        ]
+        clients = [
+            {"id": "nic", "mac": "98:b7:85:22:f8:79", "recentDeviceSerial": "SW1", "switchport": "14", "connection": "Wired"},
+            {"id": "vm", "description": "VM", "recentDeviceSerial": "SW1", "switchport": "14", "connection": "Wired"},
+            {"id": "ha", "description": "homeassistant", "recentDeviceSerial": "SW1", "switchport": "14", "connection": "Wired"},
+            {"id": "bday", "description": "birthdayserver", "recentDeviceSerial": "SW1", "switchport": "14", "connection": "Wired"},
+            {"id": "pihole", "description": "pi-hole", "recentDeviceSerial": "SW1", "switchport": "14", "connection": "Wired"},
+            {"id": "photo", "description": "photoai", "recentDeviceSerial": "SW1", "switchport": "14", "connection": "Wired"},
+            {"id": "speed", "description": "speedtest", "recentDeviceSerial": "SW1", "switchport": "14", "connection": "Wired"},
+        ]
+        nodes, links, _hints, _debug = self._apply(
+            clients, extra_nodes={"neighbor-fab": fabric}, extra_links=extra_links
+        )
+        switch_peers = {
+            lk.target for lk in links if lk.source == "SW1" and (lk.source_port or {}).get("portId") == "14"
+        }
+        self.assertEqual(switch_peers, {"neighbor-fab"})
+        children = {lk.target for lk in links if lk.source == "neighbor-fab"}
+        self.assertTrue(
+            {"client-vm", "client-ha", "client-bday", "client-pihole", "client-photo", "client-speed"} <= children
+        )
+        self.assertNotIn("client-nic", children)
+        for vm_id in ("client-vm", "client-ha", "client-bday"):
+            self.assertNotIn(vm_id, {lk.target for lk in links if lk.source == "SW1"})
+
+    def test_unnamed_mac_does_not_replace_named_port_group(self):
+        clients = [
+            {"id": "nic", "mac": "98:b7:85:22:f8:79", "recentDeviceSerial": "SW1", "switchport": "14", "connection": "Wired"},
+            {"id": "ha", "description": "homeassistant", "recentDeviceSerial": "SW1", "switchport": "14", "connection": "Wired"},
+            {"id": "photo", "description": "photoai", "recentDeviceSerial": "SW1", "switchport": "14", "connection": "Wired"},
+        ]
+        nodes, links, _hints, _debug = self._apply(clients)
+        self.assertIn("physical-SW1-14", nodes)
+        self.assertNotEqual(nodes["physical-SW1-14"].label, "98:b7:85:22:f8:79")
+        children = {lk.target for lk in links if lk.source == "physical-SW1-14"}
+        self.assertTrue({"client-ha", "client-photo", "client-nic"} <= children)
+        self.assertNotIn("client-ha", {lk.target for lk in links if lk.source == "SW1"})
+
+    def test_merge_does_not_drop_fabric_clients(self):
+        fabric = _node(
+            id="neighbor-fab",
+            type="neighbor",
+            subtype="unmanaged",
+            label="98:b7:85:22:f8:79",
+            managed=False,
+            metadata={"mac": "98:b7:85:22:f8:79"},
+        )
+        extra_links = [
+            _link(
+                id="sw-fab",
+                source="SW1",
+                target="neighbor-fab",
+                discovery_method="lldp_cdp_inferred",
+                source_port={"serial": "SW1", "portId": "14"},
+            )
+        ]
+        clients = [
+            {"id": "mgmt", "description": "Server mgmt", "recentDeviceSerial": "SW1", "switchport": "4", "connection": "Wired"},
+            {"id": "nic", "mac": "98:b7:85:22:f8:79", "recentDeviceSerial": "SW1", "switchport": "14", "connection": "Wired"},
+            {"id": "ha", "description": "homeassistant", "recentDeviceSerial": "SW1", "switchport": "14", "connection": "Wired"},
+            {"id": "photo", "description": "photoai", "recentDeviceSerial": "SW1", "switchport": "14", "connection": "Wired"},
+        ]
+        nodes, links, _hints, _debug = self._apply(
+            clients, extra_nodes={"neighbor-fab": fabric}, extra_links=extra_links
+        )
+        nodes, links = apply_entity_merges(
+            nodes,
+            links,
+            [
+                {
+                    "survivor_id": "neighbor-fab",
+                    "member_ids": ["client-mgmt"],
+                    "label": "Server",
+                    "device_class": "server",
+                    "interfaces": [
+                        {"switch_serial": "SW1", "port_id": "4", "role": "management", "member_id": "client-mgmt"},
+                        {"switch_serial": "SW1", "port_id": "14", "role": "fabric", "member_id": "neighbor-fab"},
+                    ],
+                }
+            ],
+        )
+        self.assertEqual(nodes["neighbor-fab"].label, "Server")
+        children = {lk.target for lk in links if lk.source == "neighbor-fab"}
+        self.assertTrue({"client-ha", "client-photo"} <= children)
+        switch_ports = {
+            ((lk.source_port or {}).get("portId"))
+            for lk in links
+            if lk.source == "SW1" and lk.target == "neighbor-fab"
+        }
+        self.assertEqual(switch_ports, {"4", "14"})
+
     def test_prune_drops_disconnected_clients_but_keeps_linked_unknown(self):
         nodes = {
             "SW1": self.sw,
@@ -215,6 +324,15 @@ class PhysicalTopologyTests(unittest.TestCase):
         self.assertNotIn("client-x", kept)
         self.assertIn("physical-SW1-7", kept)
         self.assertEqual(len(kept_links), 1)
+
+
+class ClientLookbackTests(unittest.TestCase):
+    def test_lookback_is_clamped_to_meraki_window(self):
+        from app.config import Settings
+
+        self.assertEqual(Settings.clamp_client_lookback(10), 300)
+        self.assertEqual(Settings.clamp_client_lookback(86400), 86400)
+        self.assertEqual(Settings.clamp_client_lookback(9_999_999), 2_678_400)
 
 
 if __name__ == "__main__":

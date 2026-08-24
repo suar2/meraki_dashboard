@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from datetime import datetime, timezone
 from typing import Any, Callable
 
@@ -71,6 +72,10 @@ def canonical_port_id(port_id: str) -> str:
     return text
 
 
+def looks_like_mac(name: str) -> bool:
+    return bool(re.fullmatch(r"[0-9a-f]{2}([:\-])[0-9a-f]{2}(?:\1[0-9a-f]{2}){4}", _norm(name)))
+
+
 def looks_like_server(name: str) -> bool:
     hay = _norm(name)
     return any(hint in hay for hint in SERVER_HINTS)
@@ -79,6 +84,26 @@ def looks_like_server(name: str) -> bool:
 def looks_like_vm(name: str) -> bool:
     hay = _norm(name)
     return any(hint in hay for hint in VM_HINTS)
+
+
+def client_matches_node(client: dict[str, Any], node: TopologyNode | None) -> bool:
+    if not node:
+        return False
+    meta = node.metadata or {}
+    client_mac = _mac(client.get("mac") or client.get("macAddress"))
+    node_macs = {_mac(meta.get("mac")), _mac(meta.get("macAddress")), _mac(meta.get("chassisId"))}
+    lldp = meta.get("lldp") if isinstance(meta.get("lldp"), dict) else {}
+    cdp = meta.get("cdp") if isinstance(meta.get("cdp"), dict) else {}
+    node_macs.add(_mac(lldp.get("chassisId")))
+    node_macs.add(_mac(cdp.get("deviceId")))
+    node_macs.update(_mac(value) for value in (node.label, node.hostname, meta.get("name")))
+    if client_mac and client_mac in node_macs:
+        return True
+    names = {_norm(node.label), _norm(node.hostname), _norm(meta.get("name"))}
+    for name in (client.get("description"), client.get("dhcpHostname"), client.get("mdnsName"), client.get("name")):
+        if _norm(name) and _norm(name) in names:
+            return True
+    return False
 
 
 def is_infra_node(node: TopologyNode) -> bool:
@@ -254,8 +279,11 @@ def _pair_linked(seen: set[tuple[str, str, str]], a: str, b: str) -> bool:
 
 
 def _pick_physical_identity(clients: list[dict[str, Any]], port_id: str) -> tuple[str, str, str]:
-    """Return (label, subtype, device_class) for the chassis on this port."""
-    named = [c for c in clients if client_label(c)]
+    """Return (label, subtype, device_class) for the chassis on this port.
+
+    An unnamed MAC is a NIC, not the chassis name, when other clients exist.
+    """
+    named = [c for c in clients if client_label(c) and not looks_like_mac(client_label(c))]
     servers = [c for c in named if looks_like_server(client_label(c)) and not looks_like_vm(client_label(c))]
     if servers:
         best = max(servers, key=lambda c: len(client_label(c)))
@@ -266,6 +294,15 @@ def _pick_physical_identity(clients: list[dict[str, Any]], port_id: str) -> tupl
         cls = "server" if looks_like_server(label) else "unmanaged"
         return (label, "server" if cls == "server" else "physical_peer", cls)
     return (f"Unknown downstream device – Port {port_id}", "unknown_downstream", "unknown")
+
+
+def _is_trunk(cfg: dict[str, Any]) -> bool:
+    return _norm(cfg.get("type")) == "trunk"
+
+
+def _clients_behind_chassis(remaining: list[dict[str, Any]], owner: TopologyNode | None) -> list[dict[str, Any]]:
+    """Keep every learned client except the chassis's own NIC MAC."""
+    return [client for client in remaining if not client_matches_node(client, owner)]
 
 
 def _port_maps(
@@ -403,12 +440,21 @@ def apply_physical_port_attachments(
                     "kind": "managed_device",
                 }
             )
-            if remaining:
-                _attach_downstream(owner, remaining, nodes, links, seen, network, positions)
+            behind = _clients_behind_chassis(remaining, owner)
+            debug["downstream_on_occupied"] = int(debug.get("downstream_on_occupied") or 0) + len(behind)
+            if behind:
+                _attach_downstream(owner, behind, nodes, links, seen, network, positions)
             continue
 
-        if owner and is_infra_node(owner):
+        if owner:
+            # Whoever LLDP/CDP already placed on this jack owns the physical port.
+            # Extra MACs learned there sit behind that chassis — never as extra switch peers.
             debug["occupied_infra"] = int(debug["occupied_infra"]) + 1
+            behind = _clients_behind_chassis(remaining, owner)
+            debug["downstream_on_occupied"] = int(debug.get("downstream_on_occupied") or 0) + len(behind)
+            if behind and not owner.managed and looks_like_mac(owner.label):
+                owner.label = f"Unknown downstream device – Port {port_key}"
+                owner.hostname = owner.label
             peer_hints.append(
                 {
                     "serial": switch_serial,
@@ -418,14 +464,14 @@ def apply_physical_port_attachments(
                     "kind": "lldp_owner",
                 }
             )
-            if remaining:
-                _attach_downstream(owner, remaining, nodes, links, seen, network, positions)
+            if behind:
+                _attach_downstream(owner, behind, nodes, links, seen, network, positions)
             continue
 
         if not remaining:
             continue
 
-        if len(remaining) == 1:
+        if len(remaining) == 1 and not _is_trunk(cfg):
             debug["direct_leaves"] = int(debug["direct_leaves"]) + 1
             client = remaining[0]
             child = _ensure_client_node(client, nodes, network, positions, parent_id=switch.id)
@@ -486,6 +532,11 @@ def apply_physical_port_attachments(
                 hostname=label,
                 device_class=device_class,
             )
+        else:
+            peer_meta = dict(nodes[peer_id].metadata or {})
+            peer_meta["client_count"] = len(remaining)
+            peer_meta["meraki_clients"] = remaining
+            nodes[peer_id].metadata = peer_meta
         peer = nodes[peer_id]
         debug_key = "unknown_downstream" if subtype == "unknown_downstream" else "physical_peers"
         debug[debug_key] = int(debug[debug_key]) + 1
@@ -543,21 +594,62 @@ def prune_orphan_nodes(
     return keep, links
 
 
+def _expand_merge_members(
+    nodes: dict[str, TopologyNode],
+    links: list[TopologyLink],
+    survivor_id: str,
+    member_ids: list[str],
+    interfaces: list[dict[str, Any]],
+) -> list[str]:
+    """Absorb the other NIC / port wrapper, but never the downstream client group."""
+    members: list[str] = []
+    for item in member_ids:
+        if item and item != survivor_id and item not in members:
+            members.append(item)
+    ports: set[tuple[str, str]] = set()
+    for iface in interfaces:
+        serial = str(iface.get("switch_serial") or "")
+        port_id = canonical_port_id(str(iface.get("port_id") or ""))
+        mid = str(iface.get("member_id") or "")
+        if serial and port_id:
+            ports.add((serial, port_id))
+        if mid and mid != survivor_id and mid in nodes and mid not in members:
+            members.append(mid)
+    occupied = occupied_switch_ports(nodes, links)
+    for serial, port_id in ports:
+        peer_id = occupied.get((serial, port_id))
+        if not peer_id or peer_id == survivor_id or peer_id not in nodes or peer_id in members:
+            continue
+        peer = nodes[peer_id]
+        if peer.type != "client" or looks_like_mac(peer.label):
+            members.append(peer_id)
+    for node in nodes.values():
+        if node.id == survivor_id or node.id in members:
+            continue
+        meta = node.metadata or {}
+        key = (str(meta.get("switch_serial") or ""), canonical_port_id(str(meta.get("port_id") or "")))
+        if key in ports and meta.get("role") in {"physical_peer", "unknown_downstream"}:
+            members.append(node.id)
+    return members
+
+
 def apply_entity_merges(
     nodes: dict[str, TopologyNode],
     links: list[TopologyLink],
     merges: list[dict[str, Any]],
 ) -> tuple[dict[str, TopologyNode], list[TopologyLink]]:
-    """Collapse multiple chassis nodes into one persisted physical entity."""
+    """Collapse NIC/chassis nodes into one entity without dropping downstream clients."""
     for merge in merges:
         survivor_id = str(merge.get("survivor_id") or "")
-        member_ids = [str(item) for item in (merge.get("member_ids") or []) if str(item) and str(item) != survivor_id]
-        if not survivor_id or survivor_id not in nodes or not member_ids:
+        requested = [str(item) for item in (merge.get("member_ids") or []) if str(item)]
+        if not survivor_id or survivor_id not in nodes:
             continue
-        if any(member not in nodes for member in member_ids):
+        interfaces = list(merge.get("interfaces") or [])
+        member_ids = _expand_merge_members(nodes, links, survivor_id, requested, interfaces)
+        member_ids = [mid for mid in member_ids if mid in nodes and mid != survivor_id]
+        if not member_ids:
             continue
         survivor = nodes[survivor_id]
-        interfaces = list(merge.get("interfaces") or [])
         label = str(merge.get("label") or survivor.label)
         survivor.label = label
         survivor.hostname = label
@@ -570,6 +662,13 @@ def apply_entity_merges(
         extra["merged_from"] = member_ids
         extra["physical_interfaces"] = interfaces
         extra["parent_id"] = extra.get("parent_id")
+        # Preserve learned clients from absorbed wrappers so the group is not replaced by a NIC MAC.
+        absorbed_clients: list[dict[str, Any]] = list(extra.get("meraki_clients") or [])
+        for mid in member_ids:
+            absorbed_clients.extend(list((nodes[mid].metadata or {}).get("meraki_clients") or []))
+        if absorbed_clients:
+            extra["meraki_clients"] = absorbed_clients
+            extra["client_count"] = len(absorbed_clients)
         survivor.metadata = extra
 
         role_by_port: dict[tuple[str, str], str] = {}
@@ -601,7 +700,10 @@ def apply_entity_merges(
                         src_port = {**src_port, "role": found, "label": found}
                     else:
                         tgt_port = {**tgt_port, "label": found, "role": found}
+            method = _norm(link.discovery_method)
             port_key = canonical_port_id(str(src_port.get("portId") or tgt_port.get("portId") or ""))
+            if method == "physical_downstream":
+                port_key = f"down:{source}:{target}"
             a, b = sorted((source, target))
             key = (a, b, port_key)
             if key in seen:

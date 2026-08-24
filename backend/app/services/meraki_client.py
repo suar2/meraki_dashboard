@@ -91,8 +91,25 @@ class MerakiClient:
     async def get_switch_port_statuses(self, serial: str) -> list[dict[str, Any]]:
         return await self._request("GET", f"/devices/{serial}/switch/ports/statuses")
 
-    async def get_network_clients(self, network_id: str, timespan: int = 3600) -> list[dict[str, Any]]:
-        return await self._request("GET", f"/networks/{network_id}/clients", params={"timespan": timespan, "perPage": 1000})
+    async def get_network_clients(self, network_id: str, timespan: int = 86400) -> list[dict[str, Any]]:
+        """Fetch Meraki clients. timespan is seconds; Cisco allows up to 31 days (default 1 day)."""
+        window = max(300, min(int(timespan or 86400), 2_678_400))
+        collected: list[dict[str, Any]] = []
+        starting_after: str | None = None
+        for _ in range(10):
+            params: dict[str, Any] = {"timespan": window, "perPage": 1000}
+            if starting_after:
+                params["startingAfter"] = starting_after
+            batch = await self._request("GET", f"/networks/{network_id}/clients", params=params)
+            if not isinstance(batch, list) or not batch:
+                break
+            collected.extend(batch)
+            if len(batch) < 1000:
+                break
+            starting_after = str(batch[-1].get("id") or "")
+            if not starting_after:
+                break
+        return collected
 
     async def get_network_switch_stacks(self, network_id: str) -> list[dict[str, Any]]:
         try:
