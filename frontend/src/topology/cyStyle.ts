@@ -65,6 +65,8 @@ export function buildCyStyle(isDark: boolean): StylesheetJson {
         opacity: isDark ? 0.4 : 0.65,
         "curve-style": "bezier",
         "control-point-step-size": 18,
+        "overlay-padding": 8,
+        "overlay-opacity": 0,
         "transition-property": "opacity,line-color,width",
         "transition-duration": 150,
       },

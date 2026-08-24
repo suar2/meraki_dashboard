@@ -209,8 +209,16 @@ export const CytoscapeStage = React.forwardRef<StageHandle, Props>(function Cyto
         });
       });
       onVisibleCount(cy.nodes(":visible").length);
-      if (prefs.allLabels) cy.nodes('[type="ap"],[type="phone"],[type="client"],[type="mv"]').addClass("showlabel");
-      else cy.nodes().removeClass("showlabel");
+      cy.nodes().removeClass("showlabel");
+      if (prefs.allLabels) {
+        cy.nodes('[type="ap"],[type="phone"],[type="client"],[type="mv"]').addClass("showlabel");
+      } else {
+        // Managed AP/camera chassis should stay labeled; clients stay quiet unless All labels is on.
+        cy.nodes().filter((n) => {
+          const type = String(n.data("type") || "");
+          return Boolean(n.data("managed")) && (type === "ap" || type === "mv");
+        }).addClass("showlabel");
+      }
       if (prefs.backbone) cy.edges('[kind="backbone"]').addClass("bb-hi");
       else cy.edges('[kind="backbone"]').removeClass("bb-hi");
     },
