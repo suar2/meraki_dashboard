@@ -90,6 +90,10 @@ export const CytoscapeStage = React.forwardRef<StageHandle, Props>(function Cyto
 
   const nodeById = React.useMemo(() => new Map((graph?.nodes || []).map((n) => [n.id, n])), [graph]);
   const linkById = React.useMemo(() => new Map((graph?.links || []).map((l) => [l.id, l])), [graph]);
+  const nodeByIdRef = React.useRef(nodeById);
+  const linkByIdRef = React.useRef(linkById);
+  nodeByIdRef.current = nodeById;
+  linkByIdRef.current = linkById;
 
   const persistPositions = React.useCallback(
     (cy: Core) => {
@@ -106,6 +110,8 @@ export const CytoscapeStage = React.forwardRef<StageHandle, Props>(function Cyto
     },
     [orgId, networkId]
   );
+  const persistPositionsRef = React.useRef(persistPositions);
+  persistPositionsRef.current = persistPositions;
 
   const pickRoots = React.useCallback((cy: Core) => {
     const cores = cy.nodes().filter((n) => n.data("type") === "core" && n.style("display") !== "none");
@@ -219,7 +225,7 @@ export const CytoscapeStage = React.forwardRef<StageHandle, Props>(function Cyto
       node.neighborhood("node").addClass("nbr");
       node.connectedEdges().addClass("hi");
       node.addClass("sel");
-      const raw = nodeById.get(id);
+      const raw = nodeByIdRef.current.get(id);
       setSelectedNode(raw);
       setSelectedLink(undefined);
       const rows: typeof neighbors = [];
@@ -244,7 +250,7 @@ export const CytoscapeStage = React.forwardRef<StageHandle, Props>(function Cyto
         cy.animate({ fit: { eles: visNhood, padding: 80 } }, { duration: 380 });
       }
     },
-    [nodeById, setPrefs]
+    [setPrefs]
   );
 
   const selectLink = React.useCallback(
@@ -258,13 +264,20 @@ export const CytoscapeStage = React.forwardRef<StageHandle, Props>(function Cyto
       cy.elements().not(nhood).addClass("faded");
       edge.addClass("sel hi");
       edge.connectedNodes().addClass("nbr");
-      setSelectedLink(linkById.get(id));
+      setSelectedLink(linkByIdRef.current.get(id));
       setSelectedNode(undefined);
       setNeighbors([]);
       setPrefs({ selectedId: id, selectedKind: "link" });
     },
-    [linkById, setPrefs]
+    [setPrefs]
   );
+
+  const selectNodeRef = React.useRef(selectNode);
+  const selectLinkRef = React.useRef(selectLink);
+  const clearSelRef = React.useRef(clearSel);
+  selectNodeRef.current = selectNode;
+  selectLinkRef.current = selectLink;
+  clearSelRef.current = clearSel;
 
   React.useEffect(() => {
     if (!containerRef.current) return;
@@ -279,10 +292,14 @@ export const CytoscapeStage = React.forwardRef<StageHandle, Props>(function Cyto
     cyRef.current = cy;
     applyCyTheme(cy, document.documentElement.getAttribute("data-theme") !== "light");
 
-    cy.on("tap", "node", (e: EventObject) => selectNode(e.target.id(), true));
-    cy.on("tap", "edge", (e: EventObject) => selectLink(e.target.id()));
+    cy.on("tap", "node", (e: EventObject) => {
+      selectNodeRef.current(e.target.id(), true);
+    });
+    cy.on("tap", "edge", (e: EventObject) => {
+      selectLinkRef.current(e.target.id());
+    });
     cy.on("tap", (e: EventObject) => {
-      if (e.target === cy) clearSel(cy);
+      if (e.target === cy) clearSelRef.current(cy);
     });
     cy.on("mouseover", "node", () => {
       document.body.style.cursor = "pointer";
@@ -290,7 +307,7 @@ export const CytoscapeStage = React.forwardRef<StageHandle, Props>(function Cyto
     cy.on("mouseout", "node", () => {
       document.body.style.cursor = "default";
     });
-    cy.on("dragfree", "node", () => persistPositions(cy));
+    cy.on("dragfree", "node", () => persistPositionsRef.current(cy));
 
     const tip = tooltipRef.current;
     const stage = containerRef.current.parentElement;
