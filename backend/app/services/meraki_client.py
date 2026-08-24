@@ -7,6 +7,7 @@ from typing import Any
 import httpx
 
 from app.config import settings
+from app.security import redact_sensitive
 
 logger = logging.getLogger(__name__)
 
@@ -16,16 +17,13 @@ class MerakiAPIError(Exception):
 
 
 class MerakiClient:
-    def __init__(self) -> None:
+    def __init__(self, api_key: str) -> None:
         self.base_url = str(settings.meraki_base_url).rstrip("/")
-        self.api_key = settings.meraki_api_key
-
-    def set_api_key(self, api_key: str) -> None:
         self.api_key = api_key.strip()
 
     def _headers(self) -> dict[str, str]:
         if not self.api_key:
-            raise MerakiAPIError("Meraki API key is not set. Enter it in the dashboard first.")
+            raise MerakiAPIError("Meraki API key required")
         return {
             "X-Cisco-Meraki-API-Key": self.api_key,
             "Accept": "application/json",
@@ -45,14 +43,16 @@ class MerakiClient:
                     response = await client.request(method, url, headers=self._headers(), **kwargs)
             except httpx.HTTPError as exc:
                 if attempt > retries:
-                    raise MerakiAPIError(f"Meraki request failed after retries: {exc}") from exc
+                    raise MerakiAPIError(
+                        redact_sensitive(f"Meraki request failed after retries: {exc}", (self.api_key,))
+                    ) from exc
                 sleep_for = backoff * (2 ** (attempt - 1))
                 logger.warning("Meraki request transport error, retrying in %ss (attempt %s/%s)", sleep_for, attempt, retries)
                 await asyncio.sleep(sleep_for)
                 continue
 
             if response.status_code == 401:
-                raise MerakiAPIError("Invalid Meraki API key. Update MERAKI_API_KEY in .env.")
+                raise MerakiAPIError("Invalid Meraki API key.")
             if response.status_code == 429:
                 if attempt > retries:
                     raise MerakiAPIError("Meraki API rate limit reached after retries. Try again shortly.")
@@ -67,7 +67,8 @@ class MerakiClient:
                 await asyncio.sleep(sleep_for)
                 continue
             if response.status_code >= 400:
-                raise MerakiAPIError(f"Meraki request failed {response.status_code}: {response.text}")
+                detail = redact_sensitive(response.text, (self.api_key,))
+                raise MerakiAPIError(f"Meraki request failed {response.status_code}: {detail}")
             return response.json()
 
     async def get_organizations(self) -> list[dict[str, Any]]:

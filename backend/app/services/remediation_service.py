@@ -6,7 +6,7 @@ from app.services.meraki_client import MerakiClient
 class RemediationService:
     SAFE_KEYS = {"type", "vlan", "nativeVlan", "allowedVlans", "enabled", "poeEnabled"}
 
-    def __init__(self, meraki: MerakiClient, audit: AuditService) -> None:
+    def __init__(self, meraki: MerakiClient, audit: AuditService | None = None) -> None:
         self.meraki = meraki
         self.audit = audit
 
@@ -26,21 +26,22 @@ class RemediationService:
             payload=changes,
         )
 
-        self.audit.append(
-            AuditLogEntry(
-                timestamp=self.audit.now(),
-                actor=payload.actor,
-                org_id=payload.org_id,
-                network_id=payload.network_id,
-                device_serial=payload.action.target_device_serial,
-                port_id=payload.action.target_port_id,
-                issue_id=payload.action.issue_id,
-                issue_category=str(payload.action.action_type),
-                previous_config=payload.action.current_values,
-                proposed_config=payload.action.proposed_values,
-                new_config=changes,
-                outcome="success",
-                api_response={"id": result.get("portId"), "name": result.get("name"), "enabled": result.get("enabled")},
+        if self.audit:
+            self.audit.append(
+                AuditLogEntry(
+                    timestamp=self.audit.now(),
+                    actor=payload.actor,
+                    org_id=payload.org_id,
+                    network_id=payload.network_id,
+                    device_serial=payload.action.target_device_serial,
+                    port_id=payload.action.target_port_id,
+                    issue_id=payload.action.issue_id,
+                    issue_category=str(payload.action.action_type),
+                    previous_config=payload.action.current_values,
+                    proposed_config=payload.action.proposed_values,
+                    new_config=changes,
+                    outcome="success",
+                    api_response={"id": result.get("portId"), "name": result.get("name"), "enabled": result.get("enabled")},
+                )
             )
-        )
         return {"status": "ok", "result": result}

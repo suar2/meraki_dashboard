@@ -1,4 +1,4 @@
-import { listNetworks, listOrganizations, setMerakiApiKey } from "./api/client";
+import { getClientMerakiKey, listNetworks, listOrganizations, setClientMerakiKey } from "./api/client";
 
 /**
  * Deduplicate Meraki bootstrap + org list per API key, and network list per org.
@@ -17,7 +17,7 @@ export function getOrganizationsForApiKey(apiKey: string): Promise<unknown[]> {
   if (!key) return Promise.resolve([]);
   if (!organizationsByKey.has(key)) {
     const p = (async () => {
-      await setMerakiApiKey(key);
+      setClientMerakiKey(key);
       return listOrganizations() as Promise<unknown[]>;
     })().catch((e) => {
       organizationsByKey.delete(key);
@@ -30,12 +30,13 @@ export function getOrganizationsForApiKey(apiKey: string): Promise<unknown[]> {
 
 export function getNetworksForOrg(orgId: string): Promise<unknown[]> {
   if (!orgId) return Promise.resolve([]);
-  if (!networksByOrgId.has(orgId)) {
+  const cacheKey = `${getClientMerakiKey()}::${orgId}`;
+  if (!networksByOrgId.has(cacheKey)) {
     const p = (listNetworks(orgId) as Promise<unknown[]>).catch((e) => {
-      networksByOrgId.delete(orgId);
+      networksByOrgId.delete(cacheKey);
       throw e;
     });
-    networksByOrgId.set(orgId, p);
+    networksByOrgId.set(cacheKey, p);
   }
-  return networksByOrgId.get(orgId)!;
+  return networksByOrgId.get(cacheKey)!;
 }

@@ -1,13 +1,11 @@
 import React from "react";
 import {
+  clearClientMerakiKey,
   executeRemediation,
   fetchChanges,
   fetchTopology,
-  listGroups,
-  listViews,
-  saveEntityMerge,
-  saveGroup as saveSharedGroup,
-  saveView as saveSharedView,
+  getClientMerakiKey,
+  setClientMerakiKey,
 } from "./api/client";
 import { CytoscapeStage, type StageHandle } from "./components/CytoscapeStage";
 import { RemediationModal } from "./components/RemediationModal";
@@ -18,7 +16,7 @@ import { WorkspaceDialog } from "./components/WorkspaceDialog";
 import { clearMerakiRequestCaches, getNetworksForOrg, getOrganizationsForApiKey } from "./merakiSession";
 import { SAMPLE_GRAPH } from "./sampleTopology";
 import type { MergeRequest } from "./components/DetailDrawer";
-import { applyLocalEntityMerge, switchPortOfNode } from "./topology/entityMerge";
+import { applyLocalEntityMerge, applyStoredEntityMerges, saveEntityMergeRecord, switchPortOfNode } from "./topology/entityMerge";
 import { DEVICE_CLASS_ORDER, DEVICE_CLASSES, asDeviceClass } from "./topology/deviceClass";
 import { computeDiagnostics } from "./topology/diagnostics";
 import { validateExpectations } from "./topology/liveExpectations";
@@ -82,36 +80,25 @@ export function App() {
 
   const loadWorkspace = React.useCallback(async (oid: string, nid: string, demo: boolean) => {
     if (!oid || !nid) return;
+    const personal = loadPersonalViews(oid, nid);
+    const personalGroups = loadPersonalGroups(oid, nid);
     if (demo) {
-      let personal = loadPersonalViews(oid, nid);
-      if (!personal.length) {
-        personal = defaultDemoViews();
-        savePersonalViews(oid, nid, personal);
+      let demoViews = personal;
+      if (!demoViews.length) {
+        demoViews = defaultDemoViews();
+        savePersonalViews(oid, nid, demoViews);
       }
-      setViews(personal);
-      let localGroups = loadPersonalGroups(oid, nid);
-      if (!localGroups.length) {
-        localGroups = defaultDemoGroups();
-        savePersonalGroups(oid, nid, localGroups);
+      setViews(demoViews);
+      let demoGroups = personalGroups;
+      if (!demoGroups.length) {
+        demoGroups = defaultDemoGroups();
+        savePersonalGroups(oid, nid, demoGroups);
       }
-      setGroups(localGroups);
+      setGroups(demoGroups);
       return;
     }
-    const personal = loadPersonalViews(oid, nid);
-    try {
-      const shared = await listViews(oid, nid);
-      setViews(mergeViews(Array.isArray(shared) ? shared : [], personal));
-    } catch {
-      setViews(personal);
-    }
-    const personalGroups = loadPersonalGroups(oid, nid);
-    try {
-      const sharedGroups = await listGroups(oid, nid);
-      const seen = new Set((Array.isArray(sharedGroups) ? sharedGroups : []).map((g) => g.id));
-      setGroups([...(Array.isArray(sharedGroups) ? sharedGroups : []), ...personalGroups.filter((g) => !seen.has(g.id))]);
-    } catch {
-      setGroups(personalGroups);
-    }
+    setViews(personal);
+    setGroups(personalGroups);
   }, []);
 
   const loadTopology = React.useCallback(async () => {
@@ -119,7 +106,7 @@ export function App() {
     setLoading(true);
     try {
       const data = await fetchTopology(orgId, networkId);
-      setGraph(data);
+      setGraph(applyStoredEntityMerges(data, orgId, networkId));
       setApiError("");
       await loadWorkspace(orgId, networkId, false);
     } catch (error: unknown) {
@@ -138,7 +125,7 @@ export function App() {
     try {
       clearMerakiRequestCaches();
       const trimmed = apiKey.trim();
-      localStorage.setItem("merakiApiKey", trimmed);
+      setClientMerakiKey(trimmed);
       const organizations = (await getOrganizationsForApiKey(trimmed)) as { id: string; name: string }[];
       setOrgs(organizations);
       setApiConnected(true);
@@ -152,11 +139,12 @@ export function App() {
       setNets([]);
       setOrgId("");
       setNetworkId("");
+      clearClientMerakiKey();
     }
   }, [apiKey]);
 
   React.useEffect(() => {
-    const savedKey = localStorage.getItem("merakiApiKey");
+    const savedKey = getClientMerakiKey();
     if (!savedKey) return;
     setApiKey(savedKey);
     let cancelled = false;
@@ -170,6 +158,7 @@ export function App() {
       .catch(() => {
         if (cancelled) return;
         setApiConnected(false);
+        clearClientMerakiKey();
       });
     return () => {
       cancelled = true;
@@ -186,7 +175,12 @@ export function App() {
       .then((n) => {
         if (!cancelled) setNets(n as { id: string; name: string }[]);
       })
-      .catch(console.error);
+      .catch((error: unknown) => {
+        if (cancelled) return;
+        setNets([]);
+        const err = error as { response?: { data?: { detail?: string } }; message?: string };
+        setApiError(err?.response?.data?.detail || err?.message || "Failed to load networks.");
+      });
     return () => {
       cancelled = true;
     };
@@ -278,8 +272,8 @@ export function App() {
       setGraph(applyLocalEntityMerge(graph, payload));
       return;
     }
-    await saveEntityMerge(payload);
-    await loadTopology();
+    saveEntityMergeRecord(payload);
+    setGraph(applyLocalEntityMerge(graph, payload));
   };
 
   const hits = React.useMemo(() => filterSearchHits(searchIndex, search), [search, searchIndex]);
@@ -357,23 +351,12 @@ export function App() {
     const camera = stageRef.current?.getCamera() || { zoom: 1, pan: { x: 0, y: 0 }, positions: {} };
     const selected = stageRef.current?.getSelectedIds() || [];
     const view = viewFromWorkspace(value.name, prefs, camera, selected, {
-      shared: value.shared,
+      shared: false,
       starred: value.starred,
     });
-    if (value.shared) {
-      try {
-        const saved = await saveSharedView(oid, nid, view);
-        setViews((prev) => mergeViews([saved], prev.filter((v) => !v.shared || v.id !== saved.id)));
-        setActiveViewId(saved.id);
-        setDialog(null);
-        return;
-      } catch {
-        /* fall through to personal */
-      }
-    }
     const next = [...loadPersonalViews(oid, nid).filter((v) => v.id !== view.id), { ...view, shared: false }];
     savePersonalViews(oid, nid, next);
-    setViews((prev) => mergeViews(prev.filter((v) => v.shared), next));
+    setViews(mergeViews([], next));
     setActiveViewId(view.id);
     setDialog(null);
   };
@@ -382,19 +365,10 @@ export function App() {
     const oid = orgId || "O_DEMO";
     const nid = networkId || "N_DEMO";
     const patched = { ...view, starred: !view.starred, updated_at: new Date().toISOString() };
-    if (view.shared) {
-      try {
-        const saved = await saveSharedView(oid, nid, patched);
-        setViews((prev) => mergeViews([saved], prev.filter((v) => v.id !== saved.id)));
-        return;
-      } catch {
-        /* personal fallback */
-      }
-    }
     const next = loadPersonalViews(oid, nid).map((v) => (v.id === view.id ? patched : v));
     if (!next.some((v) => v.id === view.id)) next.push(patched);
     savePersonalViews(oid, nid, next);
-    setViews((prev) => prev.map((v) => (v.id === view.id ? patched : v)).sort((a, b) => Number(Boolean(b.starred)) - Number(Boolean(a.starred))));
+    setViews(mergeViews([], next));
   };
 
   const persistGroup = async (value: { name: string }) => {
@@ -402,17 +376,6 @@ export function App() {
     const nid = networkId || "N_DEMO";
     const memberIds = pendingGroupIds.length ? pendingGroupIds : stageRef.current?.getSelectedIds() || [];
     const group: LogicalGroup = { id: `grp-${Date.now()}`, name: value.name, member_ids: memberIds };
-    if (memberIds.length) {
-      try {
-        const saved = await saveSharedGroup(oid, nid, group);
-        setGroups((prev) => [...prev.filter((g) => g.id !== saved.id), saved]);
-        setDialog(null);
-        setPendingGroupIds([]);
-        return;
-      } catch {
-        /* personal */
-      }
-    }
     const next = [...loadPersonalGroups(oid, nid).filter((g) => g.id !== group.id), group];
     savePersonalGroups(oid, nid, next);
     setGroups(next);
@@ -556,7 +519,6 @@ export function App() {
         open={dialog === "view"}
         title="Save dashboard view"
         submitLabel="Save view"
-        showScope
         onClose={() => setDialog(null)}
         onSubmit={(value) => void persistView(value)}
       />

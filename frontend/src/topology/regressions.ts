@@ -11,11 +11,59 @@ import { validateExpectations } from "./liveExpectations";
 import { focusKeepIds, presentGraph } from "./presentGraph";
 import { nodeHaystack } from "./searchIndex";
 import { traceToInternet } from "./tracePath";
+import {
+  applyMerakiApiKeyHeader,
+  clearClientMerakiKey,
+  getClientMerakiKey,
+  layoutStorageKey,
+  loadLayout,
+  saveLayout,
+  setClientMerakiKey,
+} from "../api/client";
+import { loadEntityMerges, saveEntityMergeRecord } from "./entityMerge";
 import type { TopologyGraph, TopologyNode } from "../types/topology";
 
 function assert(cond: unknown, message: string): void {
   if (!cond) throw new Error(message);
 }
+
+class MemoryStorage implements Storage {
+  private readonly data = new Map<string, string>();
+
+  get length(): number {
+    return this.data.size;
+  }
+
+  clear(): void {
+    this.data.clear();
+  }
+
+  getItem(key: string): string | null {
+    return this.data.get(key) ?? null;
+  }
+
+  key(index: number): string | null {
+    return Array.from(this.data.keys())[index] ?? null;
+  }
+
+  removeItem(key: string): void {
+    this.data.delete(key);
+  }
+
+  setItem(key: string, value: string): void {
+    this.data.set(key, value);
+  }
+
+  values(): string[] {
+    return Array.from(this.data.values());
+  }
+}
+
+const browserGlobals = globalThis as unknown as { sessionStorage: Storage; localStorage: Storage };
+const session = new MemoryStorage();
+const local = new MemoryStorage();
+browserGlobals.sessionStorage = session;
+browserGlobals.localStorage = local;
 
 let interaction = INITIAL_CANVAS_INTERACTION_STATE;
 let caps = canvasInteractionCapabilities(interaction);
@@ -35,6 +83,36 @@ assert(isMarqueeDrag({ x: 10, y: 10 }, { x: 16, y: 10 }), "drag threshold starts
 assert(nodeClickSelectionMode([], "a") === "replace", "first normal node click selects the node");
 assert(nodeClickSelectionMode(["a"], "b") === "add", "normal node clicks add to an existing selection");
 assert(nodeClickSelectionMode(["a", "b"], "a") === "toggle", "normal click on a selected node removes it");
+
+clearClientMerakiKey();
+setClientMerakiKey(" browser-secret ");
+assert(getClientMerakiKey() === "browser-secret", "client key is trimmed and kept in memory");
+assert(session.getItem("meraki-ops-session-api-key") === "browser-secret", "client key is sessionStorage-only");
+assert(!local.values().some((value) => value.includes("browser-secret")), "client key is never stored in localStorage");
+const headerConfig: { headers: Record<string, string> } = { headers: {} };
+applyMerakiApiKeyHeader(headerConfig);
+assert(headerConfig.headers["X-Meraki-Api-Key"] === "browser-secret", "Axios interceptor attaches Meraki key header");
+const noHeaderConfig: { url: string; headers: Record<string, string> } = { url: "/audit", headers: {} };
+applyMerakiApiKeyHeader(noHeaderConfig);
+assert(!noHeaderConfig.headers["X-Meraki-Api-Key"], "Axios interceptor does not attach Meraki key to non-Meraki endpoints");
+clearClientMerakiKey();
+assert(!session.getItem("meraki-ops-session-api-key"), "clearing key removes sessionStorage value");
+
+await saveLayout("O1", "N1", { a: { x: 12, y: 24 } });
+const storedLayout = await loadLayout("O1", "N1");
+assert(storedLayout.a?.x === 12 && storedLayout.a?.y === 24, "layout persists in browser storage");
+assert(Boolean(local.getItem(layoutStorageKey("O1", "N1"))), "layout uses local browser workspace storage");
+
+saveEntityMergeRecord({
+  org_id: "O1",
+  network_id: "N1",
+  survivor_id: "server-a",
+  member_ids: ["server-b"],
+  label: "Server",
+  device_class: "server",
+  interfaces: [],
+});
+assert(loadEntityMerges("O1", "N1").length === 1, "entity merges persist in browser storage");
 
 const physical = presentGraph(SAMPLE_GRAPH, {
   visibilityMode: "physical",

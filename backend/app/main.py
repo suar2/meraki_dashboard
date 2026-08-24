@@ -8,7 +8,6 @@ from pydantic import ValidationError
 
 from app.api.routes import router
 from app.config import Settings, configure_logging, settings
-from app.services.meraki_client import MerakiAPIError, MerakiClient
 
 logger = logging.getLogger(__name__)
 
@@ -16,24 +15,13 @@ logger = logging.getLogger(__name__)
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     configure_logging()
-    settings.ensure_data_dir()
     logger.info(
-        "Starting backend env=%s backend_port=%s data_dir=%s meraki_api_key=%s",
+        "Starting backend env=%s backend_port=%s privacy_mode=strict-zero-retention",
         settings.app_env,
         settings.backend_port,
-        settings.data_dir,
-        settings.masked_api_key,
     )
     if settings.app_env == "production" and settings.secret_key == "change_this_to_a_random_long_string":
         logger.warning("SECRET_KEY uses default value. Replace it in production.")
-    try:
-        if settings.meraki_api_key:
-            await MerakiClient().validate_credentials()
-        else:
-            logger.warning("MERAKI_API_KEY is not configured at startup; waiting for dashboard input.")
-    except MerakiAPIError as exc:
-        logger.error("Meraki startup credential check failed: %s", exc)
-        raise
     yield
 
 
@@ -46,6 +34,15 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+@app.middleware("http")
+async def no_store_api_responses(request, call_next):
+    response = await call_next(request)
+    if request.url.path.startswith("/api"):
+        response.headers["Cache-Control"] = "no-store"
+        response.headers["Pragma"] = "no-cache"
+    return response
 
 
 @app.get("/health")

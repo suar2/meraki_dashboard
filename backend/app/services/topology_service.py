@@ -29,8 +29,8 @@ class TopologyService:
         self,
         meraki: MerakiClient,
         validator: ValidationService,
-        layouts: LayoutService,
-        store: JsonFileStore,
+        layouts: LayoutService | None,
+        store: JsonFileStore | None,
         history: HistoryService | None = None,
     ) -> None:
         self.meraki = meraki
@@ -38,12 +38,14 @@ class TopologyService:
         self.layouts = layouts
         self.store = store
         self.history = history
-        self.entity_merges = EntityMergeService(store)
+        self.entity_merges = EntityMergeService(store) if store else None
 
     def _cache_name(self, org_id: str, network_id: str) -> str:
         return f"cache_topology_v8_{org_id}_{network_id}.json"
 
     def invalidate_cache(self, org_id: str, network_id: str) -> None:
+        if not self.store:
+            return
         path = self.store.base / self._cache_name(org_id, network_id)
         path.unlink(missing_ok=True)
 
@@ -264,6 +266,8 @@ class TopologyService:
             )
 
     def _load_cache(self, org_id: str, network_id: str) -> TopologyGraph | None:
+        if not self.store:
+            return None
         cached = self.store.read_json(self._cache_name(org_id, network_id), None)
         if not cached:
             return None
@@ -277,6 +281,8 @@ class TopologyService:
         return TopologyGraph.model_validate(cached)
 
     def _save_cache(self, graph: TopologyGraph) -> None:
+        if not self.store:
+            return
         self.store.write_json(self._cache_name(graph.organization["id"], graph.network["id"]), graph.model_dump(mode="json"))
 
     @staticmethod
@@ -525,7 +531,7 @@ class TopologyService:
             logger.warning("Switch stacks endpoint failed for network %s: %s", network_id, exc)
             stacks = []
         network = next((n for n in networks if n["id"] == network_id), {"id": network_id, "name": network_id})
-        positions = self.layouts.get_positions(org_id, network_id)
+        positions = self.layouts.get_positions(org_id, network_id) if self.layouts else {}
 
         ports_by_serial: dict[str, dict[str, Any]] = {}
         status_by_serial: dict[str, dict[str, Any]] = {}
@@ -562,7 +568,7 @@ class TopologyService:
             status_by_serial=status_by_serial,
             lldp_cdp_by_serial=lldp_cdp_by_serial,
             positions=positions,
-            entity_merges=self.entity_merges.list_merges(org_id, network_id),
+            entity_merges=self.entity_merges.list_merges(org_id, network_id) if self.entity_merges else [],
             compare_ports=self.validator.compare_ports if self.validator else None,
             port_map_get=self._port_map_get,
         )

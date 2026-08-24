@@ -3,35 +3,57 @@ services:
     build:
       context: .
       dockerfile: backend/Dockerfile
-    env_file:
-      - .env
     environment:
-      DATA_DIR: /app/backend/data
-    volumes:
-      - ./backend:/app/backend
-      - backend_data:/app/backend/data
-    ports:
-      - "0.0.0.0:${BACKEND_PORT:-7700}:8000"
-    working_dir: /app/backend
-    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+      APP_ENV: production
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      MERAKI_BASE_URL: ${MERAKI_BASE_URL:-https://api.meraki.com/api/v1}
+      MERAKI_CLIENT_LOOKBACK_SECONDS: ${MERAKI_CLIENT_LOOKBACK_SECONDS:-86400}
+      REQUEST_TIMEOUT_SECONDS: ${REQUEST_TIMEOUT_SECONDS:-25}
+      MAX_RETRIES: ${MAX_RETRIES:-3}
+      RETRY_BACKOFF_SECONDS: ${RETRY_BACKOFF_SECONDS:-2}
+      DATA_DIR: /tmp/meraki-dashboard
+      SECRET_KEY: ${SECRET_KEY:-change_this_to_a_random_long_string}
+      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:5500,http://127.0.0.1:5500}
+      CACHE_TTL_SECONDS: ${CACHE_TTL_SECONDS:-60}
+    expose:
+      - "8000"
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=64m
+    read_only: true
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    networks:
+      - meraki_private
 
   frontend:
     build:
       context: .
       dockerfile: frontend/Dockerfile
-    environment:
-      VITE_API_PROXY_TARGET: http://backend:8000
-      FRONTEND_PORT: ${FRONTEND_PORT:-7070}
-    volumes:
-      - ./frontend:/app/frontend
-      - frontend_node_modules:/app/frontend/node_modules
-    working_dir: /app/frontend
     ports:
-      - "0.0.0.0:${FRONTEND_PORT:-7070}:${FRONTEND_PORT:-7070}"
-    command: sh -c "npm run dev -- --host 0.0.0.0 --port ${FRONTEND_PORT:-7070}"
+      - "0.0.0.0:5500:80"
     depends_on:
       - backend
+    tmpfs:
+      - /var/cache/nginx:rw,noexec,nosuid,size=32m
+      - /var/run:rw,noexec,nosuid,size=8m
+      - /tmp:rw,noexec,nosuid,size=16m
+    read_only: true
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    cap_add:
+      - NET_BIND_SERVICE
+      - CHOWN
+      - SETUID
+      - SETGID
+    networks:
+      - meraki_private
 
-volumes:
-  backend_data:
-  frontend_node_modules:
+networks:
+  meraki_private:
+    driver: bridge

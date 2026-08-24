@@ -36,7 +36,7 @@ docker compose down
 docker compose logs -f
 ```
 
-Docker default ports differ from local dev: backend on `${BACKEND_PORT:-7700}`, frontend on `${FRONTEND_PORT:-7070}`. The root `.env` is passed to both containers; backend data is persisted in the `backend_data` named volume.
+Production Docker exposes only `0.0.0.0:5500:80` from the frontend/nginx container, so LAN clients can use `http://<HOST-IP>:5500`. FastAPI listens on port 8000 inside the private Compose network only, nginx proxies `/api/` to `http://backend:8000`, and backend temporary paths are tmpfs-backed with no named data volume. If the host firewall is enabled, allow inbound TCP/5500.
 
 ### Sanity checks (no test suite yet)
 - `GET /health` → `{"status":"ok"}`
@@ -51,7 +51,6 @@ Copy `.env.example` to `.env`. Required variables:
 
 | Variable | Purpose |
 |---|---|
-| `MERAKI_API_KEY` | Org-level Cisco Meraki API key (validated on startup, never logged raw) |
 | `MERAKI_BASE_URL` | Meraki API base URL (`https://api.meraki.com/api/v1`) |
 | `SECRET_KEY` | Arbitrary secret; default placeholder is rejected in production |
 | `CORS_ORIGINS` | Comma-separated origins (must include the frontend origin) |
@@ -63,17 +62,17 @@ Copy `.env.example` to `.env`. Required variables:
 | `CACHE_TTL_SECONDS` | Topology cache TTL |
 | `REQUEST_TIMEOUT_SECONDS` | Per-request timeout for Meraki API calls |
 | `MAX_RETRIES` / `RETRY_BACKOFF_SECONDS` | Retry config for transient/rate-limit failures |
-| `DATA_DIR` | Persistence root for layout, audit, and topology cache |
+| `DATA_DIR` | Optional temporary path; production Compose uses tmpfs |
 
 Frontend also needs `frontend/.env`:
 ```
-VITE_API_BASE_URL=http://localhost:8000
+VITE_API_PROXY_TARGET=http://localhost:8000
 FRONTEND_PORT=43123
 ```
 
-`MERAKI_API_KEY` is backend-only and must never appear in frontend code.
+Meraki API keys are entered in the browser and sent per request as `X-Meraki-Api-Key`. Do not add server-side customer key persistence, server sessions, cookies, request-body key transport, or `localStorage` key storage.
 
-Config is validated at startup by `backend/app/config.py` (Pydantic Settings). The backend also performs a live credential test call to `/organizations`; a failed check aborts startup with an actionable error.
+Config is validated at startup by `backend/app/config.py` (Pydantic Settings). Meraki credentials are validated only through request-scoped API calls.
 
 ## Architecture
 
@@ -81,21 +80,21 @@ Config is validated at startup by `backend/app/config.py` (Pydantic Settings). T
 1. Frontend (React) → Axios client (`frontend/src/api/client.ts`) → FastAPI routes (`backend/app/api/routes.py`)
 2. Routes delegate to the service layer — no business logic lives in routes
 3. Services call `MerakiClient` for all external Cisco API I/O
-4. `TopologyService` caches results for `TOPOLOGY_REFRESH_SECONDS`; serves the full graph to the frontend
-5. Node positions are persisted to JSON via `LayoutService` (scoped per org+network)
-6. All remediation actions are logged by `AuditService`
+4. `TopologyService` serves the full graph to the frontend without persistent cache when used by production routes
+5. Node positions, saved views, groups, and merge mappings live in browser workspace storage
+6. Strict privacy mode does not persist remediation audit entries on the server
 
 ### Backend Service Responsibilities
 
 | Service | Purpose |
 |---|---|
 | `meraki_client.py` | Async HTTP transport — auth headers, retries with exponential backoff, rate-limit handling |
-| `topology_service.py` | Orchestrates Meraki API calls; builds normalised graph (nodes + links); applies validation; caches result |
+| `topology_service.py` | Orchestrates Meraki API calls; builds normalised graph (nodes + links); applies validation; cache is disabled in production route wiring |
 | `validation_service.py` | Rules engine — compares both sides of each link for mode/VLAN/PoE mismatches; emits `Issue` and `RemediationAction` objects |
-| `remediation_service.py` | Applies changes to Meraki; enforces whitelist of safe keys (`type`, `vlan`, `nativeVlan`, `allowedVlans`, `enabled`, `poeEnabled`); calls audit |
-| `layout_service.py` | Read/write node positions (JSON, per org+network) |
-| `audit_service.py` | Append-only change log; returns last 200 entries |
-| `file_store.py` | Thin JSON file I/O wrapper used by layout and audit services |
+| `remediation_service.py` | Applies changes to Meraki; enforces whitelist of safe keys (`type`, `vlan`, `nativeVlan`, `allowedVlans`, `enabled`, `poeEnabled`) |
+| `layout_service.py` | Legacy JSON layout service; production frontend stores positions in browser storage |
+| `audit_service.py` | Legacy append-only change log; production routes return empty audit history |
+| `file_store.py` | Thin JSON file I/O wrapper used by legacy/local-only services |
 
 ### How Topology Is Built
 
@@ -115,7 +114,7 @@ Port mode mismatch, access VLAN mismatch, native VLAN mismatch, allowed VLAN mis
 - `Issue` — classified fault with `Severity` (`critical|warning|info`) and `IssueCategory` (`config_mismatch|operational_warning|physical_suspicion|poe_warning|unmanaged_ambiguity`)
 - `RemediationAction` — executable safe-change payload with `current_values`/`proposed_values`; always `requires_confirmation`
 - `TopologyGraph` — the full response from `GET /topology/{org_id}/{network_id}`: nodes + links + issues + `TopologySummary`
-- `AuditLogEntry` — stored in `backend/data/audit_log.json`; includes before/after config, outcome, and API response
+- `AuditLogEntry` — legacy audit schema; strict privacy production routes do not persist these records
 
 ### Frontend Component Responsibilities
 
@@ -128,7 +127,7 @@ All state lives in `main.tsx` (org/network selection, topology data, filter stat
 
 ### Data Persistence
 
-JSON files under `backend/data/` (path set by `DATA_DIR`). No database. `file_store.py` is the only persistence abstraction and is intentionally replaceable.
+Customer credentials and topology data must not be persisted server-side. Browser workspace storage owns layouts, saved views, groups, filters, camera state, and merge mappings. API keys may use memory/sessionStorage only.
 
 ## API Endpoints
 
@@ -138,11 +137,11 @@ All prefixed `/api`:
 |---|---|
 | `GET /organizations` | List orgs (also validates API key) |
 | `GET /organizations/{org_id}/networks` | List networks |
-| `GET /topology/{org_id}/{network_id}` | Full cached topology graph |
-| `POST /layout` | Save node positions |
-| `GET /layout/{org_id}/{network_id}` | Load node positions |
-| `POST /remediation/execute` | Apply a remediation action (audited) |
-| `GET /audit` | Last 200 audit log entries |
+| `GET /topology/{org_id}/{network_id}` | Full request-scoped topology graph |
+| `POST /layout` | Compatibility no-op; frontend stores node positions |
+| `GET /layout/{org_id}/{network_id}` | Compatibility empty response |
+| `POST /remediation/execute` | Apply a remediation action with request-scoped key |
+| `GET /audit` | Empty in strict privacy mode |
 | `GET /health` | Health check |
 | `GET /config-check` | Environment validation |
 

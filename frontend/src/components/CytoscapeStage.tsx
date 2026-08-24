@@ -24,7 +24,7 @@ import type { LayoutMode, UiPrefs } from "../topology/prefs";
 import { branchForPort, groupIdForHiddenMember, peersOnSwitchPort, presentGraph } from "../topology/presentGraph";
 import { buildSearchIndex } from "../topology/searchIndex";
 import { type TraceHop, traceToInternet } from "../topology/tracePath";
-import { saveLayout } from "../api/client";
+import { getStoredLayoutPositions, saveLayout } from "../api/client";
 import type { RemediationAction, TopologyChange, TopologyGraph, TopologyLink, TopologyNode } from "../types/topology";
 
 cytoscape.use(fcose);
@@ -842,12 +842,16 @@ export const CytoscapeStage = React.forwardRef<StageHandle, Props>(function Cyto
     applyFilters(cy);
     applyInteractionState(interactionStateRef.current, { force: true });
 
-    const saved = graph.nodes.filter((n) => n.position && (n.position.x || n.position.y));
-    const useSaved = saved.length > graph.nodes.length * 0.5 && presented.nodes.length === graph.nodes.length;
-    if (useSaved) {
+    const localPositions = orgId && networkId && orgId !== "O_DEMO" ? getStoredLayoutPositions(orgId, networkId) : {};
+    const localSaved = Object.keys(localPositions);
+    const graphSaved = graph.nodes.filter((n) => n.position && (n.position.x || n.position.y));
+    const useLocalSaved = localSaved.length > graph.nodes.length * 0.5 && presented.nodes.length === graph.nodes.length;
+    const useGraphSaved = graphSaved.length > graph.nodes.length * 0.5 && presented.nodes.length === graph.nodes.length;
+    if (useLocalSaved || useGraphSaved) {
       cy.nodes().forEach((n) => {
         const raw = nodeById.get(n.id());
-        if (raw?.position) n.position({ x: raw.position.x, y: raw.position.y });
+        const p = localPositions[n.id()] || raw?.position;
+        if (p) n.position({ x: p.x, y: p.y });
       });
       cy.fit(undefined, 55);
       appliedSaved.current = true;

@@ -159,10 +159,6 @@ class RemediationExecuteRequest(BaseModel):
     actor: str = "dashboard-user"
 
 
-class MerakiApiKeyPayload(BaseModel):
-    api_key: str
-
-
 class EntityMergeInterface(BaseModel):
     switch_serial: str = ""
     port_id: str = ""

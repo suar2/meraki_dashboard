@@ -10,6 +10,60 @@ export interface EntityMergePayload {
   interfaces: Array<{ switch_serial: string; port_id: string; role: string; member_id: string }>;
 }
 
+export type EntityMergeRecord = EntityMergePayload & { id: string; created_at: string };
+
+function entityMergesKey(orgId: string, networkId: string): string {
+  return `meraki-ops-entity-merges-${orgId}-${networkId}`;
+}
+
+function getLocal(): Storage | null {
+  try {
+    return typeof localStorage === "undefined" ? null : localStorage;
+  } catch {
+    return null;
+  }
+}
+
+export function loadEntityMerges(orgId: string, networkId: string): EntityMergeRecord[] {
+  const storage = getLocal();
+  if (!storage) return [];
+  try {
+    const raw = JSON.parse(storage.getItem(entityMergesKey(orgId, networkId)) || "[]");
+    return Array.isArray(raw) ? raw : [];
+  } catch {
+    return [];
+  }
+}
+
+function saveEntityMerges(orgId: string, networkId: string, merges: EntityMergeRecord[]): void {
+  const storage = getLocal();
+  if (!storage) return;
+  try {
+    storage.setItem(entityMergesKey(orgId, networkId), JSON.stringify(merges));
+  } catch {
+    /* ignore quota */
+  }
+}
+
+export function saveEntityMergeRecord(payload: EntityMergePayload): EntityMergeRecord {
+  const incoming = new Set([payload.survivor_id, ...payload.member_ids]);
+  const existing = loadEntityMerges(payload.org_id, payload.network_id).filter((merge) => {
+    const ids = new Set([merge.survivor_id, ...merge.member_ids]);
+    return ![...incoming].some((id) => ids.has(id));
+  });
+  const record: EntityMergeRecord = {
+    ...payload,
+    id: `merge-${Date.now()}`,
+    created_at: new Date().toISOString(),
+  };
+  saveEntityMerges(payload.org_id, payload.network_id, [...existing, record]);
+  return record;
+}
+
+export function applyStoredEntityMerges(graph: TopologyGraph, orgId: string, networkId: string): TopologyGraph {
+  return loadEntityMerges(orgId, networkId).reduce((current, merge) => applyLocalEntityMerge(current, merge), graph);
+}
+
 function canonicalPort(value: unknown): string {
   const text = String(value || "").trim();
   if (!text) return "";
