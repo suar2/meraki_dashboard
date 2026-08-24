@@ -7,6 +7,19 @@ import { SelectionPanel } from "./SelectionPanel";
 import { buildCyElements, linkPassesOpsFilters, nodePassesOpsFilters } from "../topology/buildCyElements";
 import { applyCyTheme, classColor, classTier } from "../topology/cyStyle";
 import { asDeviceClass, DEVICE_CLASSES } from "../topology/deviceClass";
+import {
+  INITIAL_CANVAS_INTERACTION_STATE,
+  MARQUEE_DRAG_THRESHOLD_PX,
+  canvasInteractionCapabilities,
+  isMarqueeDrag,
+  isPrimaryMouseButton,
+  isSpaceKey,
+  nodeClickSelectionMode,
+  reduceCanvasInteractionState,
+  shouldIgnoreCanvasShortcut,
+  type CanvasInteractionEvent,
+  type CanvasInteractionState,
+} from "../topology/interactionState";
 import type { LayoutMode, UiPrefs } from "../topology/prefs";
 import { branchForPort, groupIdForHiddenMember, peersOnSwitchPort, presentGraph } from "../topology/presentGraph";
 import { buildSearchIndex } from "../topology/searchIndex";
@@ -17,6 +30,7 @@ import type { RemediationAction, TopologyChange, TopologyGraph, TopologyLink, To
 cytoscape.use(fcose);
 
 const LAYOUT_SAVE_MS = 400;
+const WHEEL_ZOOM_RATE = 0.0015;
 
 const LAYOUTS: Record<LayoutMode, Record<string, unknown>> = {
   fcose: {
@@ -56,6 +70,35 @@ const LAYOUTS: Record<LayoutMode, Record<string, unknown>> = {
     nodeDimensionsIncludeLabels: true,
   },
 };
+
+function renderedPointHitsNode(node: cytoscape.NodeSingular, point: { x: number; y: number }): boolean {
+  const pos = node.renderedPosition();
+  const halfWidth = Math.max(node.renderedWidth() / 2, 10);
+  const halfHeight = Math.max(node.renderedHeight() / 2, 10);
+  return Math.abs(pos.x - point.x) <= halfWidth && Math.abs(pos.y - point.y) <= halfHeight;
+}
+
+function pointToSegmentDistance(
+  point: { x: number; y: number },
+  start: { x: number; y: number },
+  end: { x: number; y: number }
+): number {
+  const dx = end.x - start.x;
+  const dy = end.y - start.y;
+  const lenSq = dx * dx + dy * dy;
+  if (!lenSq) return Math.hypot(point.x - start.x, point.y - start.y);
+  const t = Math.max(0, Math.min(1, ((point.x - start.x) * dx + (point.y - start.y) * dy) / lenSq));
+  return Math.hypot(point.x - (start.x + t * dx), point.y - (start.y + t * dy));
+}
+
+function renderedPointHitsEdge(edge: cytoscape.EdgeSingular, point: { x: number; y: number }): boolean {
+  const bb = edge.renderedBoundingBox({ includeLabels: false });
+  const hitPadding = 14;
+  if (point.x < bb.x1 - hitPadding || point.x > bb.x2 + hitPadding || point.y < bb.y1 - hitPadding || point.y > bb.y2 + hitPadding) {
+    return false;
+  }
+  return pointToSegmentDistance(point, edge.source().renderedPosition(), edge.target().renderedPosition()) <= hitPadding;
+}
 
 export interface StageHandle {
   exportPNG: () => void;
@@ -109,7 +152,8 @@ export const CytoscapeStage = React.forwardRef<StageHandle, Props>(function Cyto
   const boxingRef = React.useRef(false);
   const pendingSelect = React.useRef<string | null>(null);
   const pendingFocus = React.useRef<{ nodeIds: string[]; linkIds: string[] } | null>(null);
-  const marqueeRef = React.useRef<{ x0: number; y0: number; additive: boolean } | null>(null);
+  const interactionStateRef = React.useRef<CanvasInteractionState>(INITIAL_CANVAS_INTERACTION_STATE);
+  const marqueeRef = React.useRef<{ x0: number; y0: number; active: boolean } | null>(null);
   const [marquee, setMarquee] = React.useState<{ left: number; top: number; width: number; height: number } | null>(null);
 
   const presented = React.useMemo(() => {
@@ -293,13 +337,34 @@ export const CytoscapeStage = React.forwardRef<StageHandle, Props>(function Cyto
       if (prefs.backbone) cy.edges('[kind="backbone"]').addClass("bb-hi");
       else cy.edges('[kind="backbone"]').removeClass("bb-hi");
     },
-    [graph, presented, nodeById, linkById, prefs, onVisibleCount]
+    [
+      graph,
+      presented,
+      nodeById,
+      linkById,
+      prefs.hiddenTypes,
+      prefs.platforms,
+      prefs.firmware,
+      prefs.unmanagedOnly,
+      prefs.clientsOnly,
+      prefs.showMismatchesOnly,
+      prefs.severityFilter,
+      prefs.showWireless,
+      prefs.wiredOnly,
+      prefs.wirelessOnly,
+      prefs.allLabels,
+      prefs.backbone,
+      onVisibleCount,
+    ]
   );
+
+  const selectedIdsRef = React.useRef<string[]>([]);
 
   const clearSel = React.useCallback(
     (cy: Core) => {
       cy.elements().removeClass("sel nbr hi faded trace");
       cy.nodes().unselect();
+      selectedIdsRef.current = [];
       setSelectedNode(undefined);
       setSelectedLink(undefined);
       setSelectedIds([]);
@@ -312,12 +377,10 @@ export const CytoscapeStage = React.forwardRef<StageHandle, Props>(function Cyto
     [setPrefs]
   );
 
-  const selectedIdsRef = React.useRef<string[]>([]);
-  selectedIdsRef.current = selectedIds;
-
   const paintMulti = React.useCallback((ids: string[]) => {
     const cy = cyRef.current;
     if (!cy) return;
+    selectedIdsRef.current = ids;
     const keep = new Set(ids);
     cy.elements().removeClass("sel nbr hi faded trace");
     cy.nodes().unselect();
@@ -384,9 +447,14 @@ export const CytoscapeStage = React.forwardRef<StageHandle, Props>(function Cyto
         paintMulti(next);
         return;
       }
-      const node = cy.getElementById(id);
+      if (next.length === 0) {
+        clearSel(cy);
+        return;
+      }
+      const targetId = next[0];
+      const node = cy.getElementById(targetId);
       if (!node || node.empty()) {
-        if (graph && graph.nodes.some((n) => n.id === id)) expandForNode(id);
+        if (graph && graph.nodes.some((n) => n.id === targetId)) expandForNode(targetId);
         return;
       }
       if (node.style("display") === "none") node.style("display", "element");
@@ -396,34 +464,35 @@ export const CytoscapeStage = React.forwardRef<StageHandle, Props>(function Cyto
       node.neighborhood("node").addClass("nbr");
       node.connectedEdges().addClass("hi");
       node.addClass("sel");
-      const raw = nodeByIdRef.current.get(id) || graph?.nodes.find((n) => n.id === id);
+      const raw = nodeByIdRef.current.get(targetId) || graph?.nodes.find((n) => n.id === targetId);
       setSelectedNode(raw);
-      setSelectedIds([id]);
+      selectedIdsRef.current = [targetId];
+      setSelectedIds([targetId]);
       setSelectedLink(undefined);
       setPortHighlight("");
       const rows: typeof neighbors = [];
       node.connectedEdges().forEach((e) => {
         const ed = e.data();
-        const otherId = ed.source === id ? ed.target : ed.source;
+        const otherId = ed.source === targetId ? ed.target : ed.source;
         const other = cy.getElementById(otherId);
         rows.push({
           id: otherId,
           label: other.data("label") || otherId,
           color: other.data("color"),
           type: other.data("type"),
-          myIf: ed.source === id ? ed.sourceIf : ed.targetIf,
-          theirIf: ed.source === id ? ed.targetIf : ed.sourceIf,
+          myIf: ed.source === targetId ? ed.sourceIf : ed.targetIf,
+          theirIf: ed.source === targetId ? ed.targetIf : ed.sourceIf,
         });
       });
       rows.sort((a, b) => classTier(b.type) - classTier(a.type) || a.label.localeCompare(b.label));
       setNeighbors(rows);
-      setPrefs({ selectedId: id, selectedKind: "node" });
+      setPrefs({ selectedId: targetId, selectedKind: "node" });
       if (recenter) {
         const visNhood = nhood.filter(":visible");
         cy.animate({ fit: { eles: visNhood, padding: 80 } }, { duration: 380 });
       }
     },
-    [setPrefs, expandGroup, expandForNode, graph, paintMulti]
+    [setPrefs, expandGroup, expandForNode, graph, paintMulti, clearSel]
   );
 
   const selectLink = React.useCallback(
@@ -525,6 +594,50 @@ export const CytoscapeStage = React.forwardRef<StageHandle, Props>(function Cyto
   runTraceRef.current = runTrace;
   paintMultiRef.current = paintMulti;
 
+  const applyInteractionState = React.useCallback(
+    (
+      next: CanvasInteractionState,
+      opts: { clearMarquee?: boolean; force?: boolean } = {}
+    ) => {
+      const current = interactionStateRef.current;
+      if (!opts.force && current.mode === next.mode && current.spacePressed === next.spacePressed) return;
+      interactionStateRef.current = next;
+
+      const caps = canvasInteractionCapabilities(next);
+      const cy = cyRef.current;
+      if (cy) {
+        cy.userPanningEnabled(caps.userPanningEnabled);
+        cy.boxSelectionEnabled(false);
+        cy.autoungrabify(caps.userPanningEnabled);
+      }
+
+      containerRef.current?.classList.toggle("cy-pan-mode", caps.userPanningEnabled);
+      containerRef.current?.classList.toggle("cy-selection-mode", caps.marqueeEnabled);
+      document.body.style.cursor = caps.userPanningEnabled ? "grab" : "default";
+
+      if (!caps.marqueeEnabled) {
+        marqueeRef.current = null;
+        boxingRef.current = false;
+        if (opts.clearMarquee !== false) setMarquee(null);
+      }
+    },
+    []
+  );
+
+  const dispatchInteractionEvent = React.useCallback(
+    (event: CanvasInteractionEvent) => {
+      applyInteractionState(reduceCanvasInteractionState(interactionStateRef.current, event));
+    },
+    [applyInteractionState]
+  );
+
+  const forceSelectionMode = React.useCallback(
+    (clearMarquee = true) => {
+      applyInteractionState(INITIAL_CANVAS_INTERACTION_STATE, { clearMarquee, force: true });
+    },
+    [applyInteractionState]
+  );
+
   React.useEffect(() => {
     if (!containerRef.current) return;
     const host = containerRef.current;
@@ -535,23 +648,28 @@ export const CytoscapeStage = React.forwardRef<StageHandle, Props>(function Cyto
       minZoom: 0.12,
       maxZoom: 3.5,
       style: [],
-      boxSelectionEnabled: true,
+      boxSelectionEnabled: false,
       selectionType: "additive",
       userPanningEnabled: false,
       panningEnabled: true,
     });
     cyRef.current = cy;
-    cy.userPanningEnabled(false);
-    cy.boxSelectionEnabled(true);
+    applyInteractionState(interactionStateRef.current, { force: true });
     applyCyTheme(cy, document.documentElement.getAttribute("data-theme") !== "light");
 
     cy.on("tap", "node", (e: EventObject) => {
+      if (interactionStateRef.current.mode === "pan") return;
       setCtxMenu(null);
       const orig = e.originalEvent as MouseEvent | undefined;
-      const mode = orig?.ctrlKey || orig?.metaKey ? "toggle" : orig?.shiftKey ? "add" : "replace";
-      selectNodeRef.current(e.target.id(), true, mode);
+      const id = e.target.id();
+      const mode = nodeClickSelectionMode(selectedIdsRef.current, id, {
+        add: Boolean(orig?.shiftKey),
+        toggle: Boolean(orig?.ctrlKey || orig?.metaKey),
+      });
+      selectNodeRef.current(id, false, mode);
     });
     cy.on("tap", "edge", (e: EventObject) => {
+      if (interactionStateRef.current.mode === "pan") return;
       setCtxMenu(null);
       selectLinkRef.current(e.target.id());
     });
@@ -561,42 +679,37 @@ export const CytoscapeStage = React.forwardRef<StageHandle, Props>(function Cyto
         clearSelRef.current(cy);
       }
     });
-    cy.on("boxstart", () => {
-      boxingRef.current = true;
-    });
-    cy.on("boxend", () => {
-      const ids = cy.nodes(":selected").filter((n) => n.style("display") !== "none").map((n) => n.id());
-      window.setTimeout(() => {
-        boxingRef.current = false;
-      }, 0);
-      if (ids.length) paintMultiRef.current(ids);
-    });
 
     const onDown = (ev: MouseEvent) => {
-      if (ev.button !== 0 || !host) return;
+      const caps = canvasInteractionCapabilities(interactionStateRef.current);
+      if (!caps.marqueeEnabled) return;
+      if (!isPrimaryMouseButton(ev.button) || !host) return;
       const live = cyRef.current;
       if (!live) return;
       const rect = host.getBoundingClientRect();
       const rp = { x: ev.clientX - rect.left, y: ev.clientY - rect.top };
-      const overNode = live.nodes(":visible").some((n) => {
-        const p = n.renderedPosition();
-        const w = Math.max(n.renderedWidth() / 2, 10);
-        const h = Math.max(n.renderedHeight() / 2, 10);
-        return Math.abs(p.x - rp.x) <= w && Math.abs(p.y - rp.y) <= h;
-      });
-      if (overNode) return;
+      const overNode = live.nodes(":visible").some((n) => renderedPointHitsNode(n as cytoscape.NodeSingular, rp));
+      const overEdge = !overNode && live.edges(":visible").some((edge) => renderedPointHitsEdge(edge as cytoscape.EdgeSingular, rp));
+      if (overNode || overEdge) return;
       ev.preventDefault();
       ev.stopPropagation();
+      ev.stopImmediatePropagation();
+      setCtxMenu(null);
       boxingRef.current = true;
-      marqueeRef.current = { x0: rp.x, y0: rp.y, additive: ev.ctrlKey || ev.metaKey || ev.shiftKey };
-      setMarquee({ left: rp.x, top: rp.y, width: 0, height: 0 });
+      marqueeRef.current = { x0: rp.x, y0: rp.y, active: false };
+      setMarquee(null);
     };
     const onMove = (ev: MouseEvent) => {
       const start = marqueeRef.current;
       if (!start || !host) return;
+      ev.preventDefault();
+      ev.stopPropagation();
+      ev.stopImmediatePropagation();
       const rect = host.getBoundingClientRect();
       const x = ev.clientX - rect.left;
       const y = ev.clientY - rect.top;
+      if (!start.active && !isMarqueeDrag({ x: start.x0, y: start.y0 }, { x, y }, MARQUEE_DRAG_THRESHOLD_PX)) return;
+      start.active = true;
       setMarquee({
         left: Math.min(start.x0, x),
         top: Math.min(start.y0, y),
@@ -607,10 +720,14 @@ export const CytoscapeStage = React.forwardRef<StageHandle, Props>(function Cyto
     const onUp = (ev: MouseEvent) => {
       const start = marqueeRef.current;
       if (!start || !host) return;
+      ev.preventDefault();
+      ev.stopPropagation();
+      ev.stopImmediatePropagation();
       const live = cyRef.current;
       const rect = host.getBoundingClientRect();
       const x = ev.clientX - rect.left;
       const y = ev.clientY - rect.top;
+      const dragged = isMarqueeDrag({ x: start.x0, y: start.y0 }, { x, y }, MARQUEE_DRAG_THRESHOLD_PX);
       const box = {
         left: Math.min(start.x0, x),
         top: Math.min(start.y0, y),
@@ -623,8 +740,8 @@ export const CytoscapeStage = React.forwardRef<StageHandle, Props>(function Cyto
         boxingRef.current = false;
       }, 0);
       if (!live) return;
-      if (box.width < 5 && box.height < 5) {
-        if (!start.additive) clearSelRef.current(live);
+      if (!dragged) {
+        clearSelRef.current(live);
         return;
       }
       const ids = live
@@ -634,17 +751,30 @@ export const CytoscapeStage = React.forwardRef<StageHandle, Props>(function Cyto
           return !(bb.x2 < box.left || bb.x1 > box.left + box.width || bb.y2 < box.top || bb.y1 > box.top + box.height);
         })
         .map((n) => n.id());
-      if (start.additive) {
+      if (ids.length) {
         paintMultiRef.current([...new Set([...selectedIdsRef.current, ...ids])]);
-      } else if (ids.length) {
-        paintMultiRef.current(ids);
       } else {
         clearSelRef.current(live);
       }
     };
+    const onWheel = (ev: WheelEvent) => {
+      const live = cyRef.current;
+      if (!live || !host) return;
+      ev.preventDefault();
+      ev.stopPropagation();
+      ev.stopImmediatePropagation();
+      const rect = host.getBoundingClientRect();
+      const factor = Math.pow(1 + WHEEL_ZOOM_RATE, -ev.deltaY);
+      const level = Math.max(live.minZoom(), Math.min(live.maxZoom(), live.zoom() * factor));
+      live.zoom({
+        level,
+        renderedPosition: { x: ev.clientX - rect.left, y: ev.clientY - rect.top },
+      });
+    };
     host.addEventListener("mousedown", onDown, true);
-    window.addEventListener("mousemove", onMove);
-    window.addEventListener("mouseup", onUp);
+    host.addEventListener("wheel", onWheel, { capture: true, passive: false });
+    window.addEventListener("mousemove", onMove, true);
+    window.addEventListener("mouseup", onUp, true);
     cy.on("cxttap", "node", (e: EventObject) => {
       const orig = e.originalEvent as MouseEvent | undefined;
       if (orig?.preventDefault) orig.preventDefault();
@@ -655,10 +785,11 @@ export const CytoscapeStage = React.forwardRef<StageHandle, Props>(function Cyto
       setCtxMenu({ x, y, nodeId: e.target.id() });
     });
     cy.on("mouseover", "node", () => {
+      if (interactionStateRef.current.mode === "pan") return;
       document.body.style.cursor = "pointer";
     });
     cy.on("mouseout", "node", () => {
-      document.body.style.cursor = "default";
+      document.body.style.cursor = interactionStateRef.current.mode === "pan" ? "grab" : "default";
     });
     cy.on("dragfree", "node", () => persistPositionsRef.current(cy));
 
@@ -686,15 +817,17 @@ export const CytoscapeStage = React.forwardRef<StageHandle, Props>(function Cyto
     });
 
     return () => {
+      forceSelectionMode(false);
       host.removeEventListener("mousedown", onDown, true);
-      window.removeEventListener("mousemove", onMove);
-      window.removeEventListener("mouseup", onUp);
+      host.removeEventListener("wheel", onWheel, true);
+      window.removeEventListener("mousemove", onMove, true);
+      window.removeEventListener("mouseup", onUp, true);
       cy.destroy();
       cyRef.current = null;
     };
     // select handlers are stable enough; we recreate only on mount
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [applyInteractionState, forceSelectionMode]);
 
   React.useEffect(() => {
     const cy = cyRef.current;
@@ -707,8 +840,7 @@ export const CytoscapeStage = React.forwardRef<StageHandle, Props>(function Cyto
     cy.add(buildCyElements(presented));
     applyCyTheme(cy, prefs.theme !== "light");
     applyFilters(cy);
-    cy.userPanningEnabled(false);
-    cy.boxSelectionEnabled(true);
+    applyInteractionState(interactionStateRef.current, { force: true });
 
     const saved = graph.nodes.filter((n) => n.position && (n.position.x || n.position.y));
     const useSaved = saved.length > graph.nodes.length * 0.5 && presented.nodes.length === graph.nodes.length;
@@ -843,9 +975,37 @@ export const CytoscapeStage = React.forwardRef<StageHandle, Props>(function Cyto
   }));
 
   React.useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (shouldIgnoreCanvasShortcut(e.target) || !isSpaceKey(e)) return;
+      e.preventDefault();
+      dispatchInteractionEvent({ type: "spaceDown" });
+    };
+    const onKeyUp = (e: KeyboardEvent) => {
+      if (!isSpaceKey(e)) return;
+      if (interactionStateRef.current.mode === "pan") e.preventDefault();
+      dispatchInteractionEvent({ type: "spaceUp" });
+    };
+    const onBlur = () => forceSelectionMode();
+    const onVisibilityChange = () => {
+      if (document.visibilityState !== "visible") forceSelectionMode();
+    };
+
+    document.addEventListener("keydown", onKeyDown);
+    document.addEventListener("keyup", onKeyUp);
+    window.addEventListener("blur", onBlur);
+    document.addEventListener("visibilitychange", onVisibilityChange);
+    return () => {
+      document.removeEventListener("keydown", onKeyDown);
+      document.removeEventListener("keyup", onKeyUp);
+      window.removeEventListener("blur", onBlur);
+      document.removeEventListener("visibilitychange", onVisibilityChange);
+      forceSelectionMode(false);
+    };
+  }, [dispatchInteractionEvent, forceSelectionMode]);
+
+  React.useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      const tag = (e.target as HTMLElement)?.tagName?.toLowerCase();
-      if (tag === "input" || tag === "textarea" || tag === "select") return;
+      if (shouldIgnoreCanvasShortcut(e.target)) return;
       const cy = cyRef.current;
       if (!cy) return;
       if (e.key === "Escape") {

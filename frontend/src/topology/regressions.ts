@@ -1,4 +1,11 @@
 import { computeDiagnostics } from "./diagnostics";
+import {
+  INITIAL_CANVAS_INTERACTION_STATE,
+  canvasInteractionCapabilities,
+  isMarqueeDrag,
+  nodeClickSelectionMode,
+  reduceCanvasInteractionState,
+} from "./interactionState";
 import { SAMPLE_GRAPH } from "../sampleTopology";
 import { validateExpectations } from "./liveExpectations";
 import { focusKeepIds, presentGraph } from "./presentGraph";
@@ -9,6 +16,25 @@ import type { TopologyGraph, TopologyNode } from "../types/topology";
 function assert(cond: unknown, message: string): void {
   if (!cond) throw new Error(message);
 }
+
+let interaction = INITIAL_CANVAS_INTERACTION_STATE;
+let caps = canvasInteractionCapabilities(interaction);
+assert(!caps.userPanningEnabled && caps.marqueeEnabled, "selection mode disables user panning and enables marquee");
+interaction = reduceCanvasInteractionState(interaction, { type: "spaceDown" });
+caps = canvasInteractionCapabilities(interaction);
+assert(interaction.spacePressed && caps.userPanningEnabled && !caps.marqueeEnabled, "Space enters pan mode only");
+interaction = reduceCanvasInteractionState(interaction, { type: "spaceUp" });
+caps = canvasInteractionCapabilities(interaction);
+assert(!interaction.spacePressed && !caps.userPanningEnabled && caps.marqueeEnabled, "Space release restores selection mode");
+interaction = reduceCanvasInteractionState(interaction, { type: "spaceDown" });
+interaction = reduceCanvasInteractionState(interaction, { type: "forceSelection" });
+caps = canvasInteractionCapabilities(interaction);
+assert(!interaction.spacePressed && !caps.userPanningEnabled && caps.marqueeEnabled, "lost Space events force selection mode");
+assert(!isMarqueeDrag({ x: 10, y: 10 }, { x: 14, y: 10 }), "tiny empty-canvas movement stays a click");
+assert(isMarqueeDrag({ x: 10, y: 10 }, { x: 16, y: 10 }), "drag threshold starts marquee selection");
+assert(nodeClickSelectionMode([], "a") === "replace", "first normal node click selects the node");
+assert(nodeClickSelectionMode(["a"], "b") === "add", "normal node clicks add to an existing selection");
+assert(nodeClickSelectionMode(["a", "b"], "a") === "toggle", "normal click on a selected node removes it");
 
 const physical = presentGraph(SAMPLE_GRAPH, {
   visibilityMode: "physical",

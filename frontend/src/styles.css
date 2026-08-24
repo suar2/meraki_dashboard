@@ -730,6 +730,14 @@
   background: color-mix(in srgb, #9da9ff 18%, transparent);
   border-radius: 2px;
 }
+#cy.cy-pan-mode,
+#cy.cy-pan-mode canvas {
+  cursor: grab !important;
+}
+#cy.cy-pan-mode:active,
+#cy.cy-pan-mode:active canvas {
+  cursor: grabbing !important;
+}
 .ws-hint {
   font-size: var(--fs-xs);
   color: var(--txt-dim);
