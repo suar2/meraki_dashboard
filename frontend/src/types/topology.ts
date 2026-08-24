@@ -125,3 +125,68 @@ export interface TopologyGraph {
   port_peer_hints?: Array<Record<string, unknown>>;
   topology_debug?: Record<string, unknown>;
 }
+
+export interface TopologyChange {
+  id: string;
+  at: string;
+  kind: string;
+  summary: string;
+  node_id?: string;
+  port?: string;
+  severity?: string;
+  before?: unknown;
+  after?: unknown;
+}
+
+export interface TopologyDiagnostics {
+  physical_edges: number;
+  wireless_edges: number;
+  high_confidence: number;
+  medium_confidence: number;
+  low_confidence: number;
+  unknown_confidence?: number;
+  unresolved_nodes: number;
+  duplicate_identities: number;
+  orphans: number;
+  total_nodes: number;
+  managed_nodes?: number;
+}
+
+export interface SavedView {
+  id: string;
+  name: string;
+  starred?: boolean;
+  shared?: boolean;
+  view_mode?: string;
+  selected_nodes?: string[];
+  hidden_nodes?: string[];
+  focus_nodes?: string[];
+  expanded_groups?: string[];
+  filters?: Record<string, unknown>;
+  positions?: Record<string, { x: number; y: number }>;
+  zoom?: number | null;
+  pan?: { x: number; y: number };
+  selected_ports?: string[];
+  highlighted_path?: string[];
+  layout?: string;
+  collapse_wireless?: boolean;
+  collapse_downstream?: boolean;
+  created_at?: string;
+  updated_at?: string;
+}
+
+export interface LogicalGroup {
+  id: string;
+  name: string;
+  member_ids: string[];
+}
+
+export interface SearchHit {
+  id: string;
+  label: string;
+  ip: string;
+  type: string;
+  color: string;
+  haystack: string;
+  match?: string;
+}

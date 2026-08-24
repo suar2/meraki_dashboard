@@ -44,6 +44,8 @@ interface Props {
   graph?: TopologyGraph | null;
   mergeCandidates?: TopologyNode[];
   onMerge?: (request: MergeRequest) => void;
+  learnedByPort?: Record<string, Array<{ label: string; mac?: string; ip?: string }>>;
+  changesByPort?: Record<string, Array<{ at: string; summary: string }>>;
 }
 
 function Cell({ k, v, hideEmpty }: { k: string; v: unknown; hideEmpty?: boolean }) {
@@ -145,6 +147,8 @@ export function DetailDrawer({
   graph,
   mergeCandidates,
   onMerge,
+  learnedByPort,
+  changesByPort,
 }: Props) {
   const [mergeId, setMergeId] = React.useState("");
   const [mergeLabel, setMergeLabel] = React.useState("");
@@ -170,6 +174,8 @@ export function DetailDrawer({
         highlightPortId={highlightPortId}
         peersByPort={peersByPort}
         onPortClick={onPortClick}
+        learnedByPort={learnedByPort}
+        changesByPort={changesByPort}
       />
     ) : null;
 

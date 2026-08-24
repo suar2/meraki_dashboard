@@ -89,6 +89,34 @@ function groupNode(id: string, parent: TopologyNode, members: TopologyNode[], ki
   };
 }
 
+export function descendantsOf(graph: TopologyGraph, ids: string[]): Set<string> {
+  const keep = new Set(ids);
+  const queue = [...ids];
+  while (queue.length) {
+    const cur = queue.shift()!;
+    for (const link of graph.links) {
+      if (link.source !== cur || keep.has(link.target)) continue;
+      keep.add(link.target);
+      queue.push(link.target);
+    }
+  }
+  return keep;
+}
+
+export function focusKeepIds(graph: TopologyGraph, selected: string[]): Set<string> {
+  const byId = new Map(graph.nodes.map((n) => [n.id, n]));
+  const keep = new Set(selected);
+  for (const id of selected) {
+    const node = byId.get(id);
+    const cls = asDeviceClass(String(node?.device_class || ""));
+    const sub = String(node?.subtype || "");
+    const expand = cls !== "mx" && cls !== "core" && cls !== "access" && sub !== "switch" && sub !== "firewall";
+    if (!expand) continue;
+    for (const child of descendantsOf(graph, [id])) keep.add(child);
+  }
+  return keep;
+}
+
 export function presentGraph(
   graph: TopologyGraph,
   opts: {
@@ -96,10 +124,20 @@ export function presentGraph(
     collapseWireless: boolean;
     collapseDownstream: boolean;
     expandedGroups: string[];
+    focusIds?: string[];
+    hiddenNodeIds?: string[];
   }
 ): TopologyGraph {
   const byId = new Map(graph.nodes.map((n) => [n.id, n]));
-  const visible = graph.nodes.filter((n) => nodeVisible(n, opts.visibilityMode, byId));
+  let visible = graph.nodes.filter((n) => nodeVisible(n, opts.visibilityMode, byId));
+  if (opts.hiddenNodeIds?.length) {
+    const hidden = new Set(opts.hiddenNodeIds);
+    visible = visible.filter((n) => !hidden.has(n.id));
+  }
+  if (opts.focusIds?.length) {
+    const keep = focusKeepIds(graph, opts.focusIds);
+    visible = visible.filter((n) => keep.has(n.id));
+  }
   const visibleIds = new Set(visible.map((n) => n.id));
   let links = graph.links.filter((l) => visibleIds.has(l.source) && visibleIds.has(l.target));
   const expanded = new Set(opts.expandedGroups);

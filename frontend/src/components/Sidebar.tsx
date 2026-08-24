@@ -2,20 +2,16 @@ import React from "react";
 import { Icon } from "./Icon";
 import { DEVICE_CLASS_ORDER, DEVICE_CLASSES } from "../topology/deviceClass";
 import type { LayoutMode, UiPrefs } from "../topology/prefs";
-
-interface SearchHit {
-  id: string;
-  label: string;
-  ip: string;
-  type: string;
-  color: string;
-}
+import { formatChangeTime } from "../topology/sampleChanges";
+import type { LogicalGroup, SavedView, SearchHit, TopologyChange, TopologyDiagnostics } from "../types/topology";
 
 interface MultiOption {
   value: string;
   label: string;
   count?: number;
 }
+
+export type ChangeWindow = "1h" | "24h" | "7d";
 
 interface Props {
   prefs: UiPrefs;
@@ -30,6 +26,21 @@ interface Props {
   platforms: MultiOption[];
   firmware: MultiOption[];
   visibleCount: number;
+  changes: TopologyChange[];
+  changeWindow: ChangeWindow;
+  setChangeWindow: (w: ChangeWindow) => void;
+  onPickChange: (change: TopologyChange) => void;
+  diagnostics?: TopologyDiagnostics | null;
+  labChecks?: { passed: number; applicable: number; ok: boolean; wireless_under_ap?: boolean } | null;
+  views: SavedView[];
+  activeViewId?: string | null;
+  onApplyView: (view: SavedView) => void;
+  onSaveView: () => void;
+  onStarView: (view: SavedView) => void;
+  groups: LogicalGroup[];
+  onApplyGroup: (group: LogicalGroup) => void;
+  onCreateGroup: () => void;
+  onShowAll: () => void;
 }
 
 function ToggleRow({
@@ -128,6 +139,21 @@ export function Sidebar({
   platforms,
   firmware,
   visibleCount,
+  changes,
+  changeWindow,
+  setChangeWindow,
+  onPickChange,
+  diagnostics,
+  labChecks,
+  views,
+  activeViewId,
+  onApplyView,
+  onSaveView,
+  onStarView,
+  groups,
+  onApplyGroup,
+  onCreateGroup,
+  onShowAll,
 }: Props) {
   const hiddenTypes = new Set(prefs.hiddenTypes);
   const hiddenPlat = new Set(prefs.platforms);
@@ -141,6 +167,7 @@ export function Sidebar({
     prefs.showMismatchesOnly ||
     prefs.severityFilter !== "all";
   const [openDrop, setOpenDrop] = React.useState<string | null>(null);
+  const focused = Boolean(prefs.focusIds?.length || prefs.hiddenNodeIds?.length);
 
   React.useEffect(() => {
     const close = () => setOpenDrop(null);
@@ -169,7 +196,7 @@ export function Sidebar({
               id="search"
               autoComplete="off"
               spellCheck={false}
-              aria-label="Search host or IP"
+              aria-label="Search hostname, MAC, IP, serial, port, VLAN, SSID"
               placeholder=" "
               value={search}
               onChange={(e) => {
@@ -180,7 +207,7 @@ export function Sidebar({
             />
             {!search && (
               <div className="search-ph" aria-hidden="true">
-                <span>Search</span>
+                <span>Host, MAC, IP, VLAN…</span>
                 <span className="kbds">
                   <kbd>ctrl</kbd>
                   <kbd>K</kbd>
@@ -202,6 +229,107 @@ export function Sidebar({
             </div>
           </div>
         </div>
+
+        <div className="section">
+          <div className="sec-head">
+            <span className="bar" />
+            <span className="sec-title">Changes</span>
+          </div>
+          <div className="seg">
+            {(["1h", "24h", "7d"] as ChangeWindow[]).map((w) => (
+              <button type="button" key={w} className={changeWindow === w ? "on" : ""} onClick={() => setChangeWindow(w)}>
+                {w === "1h" ? "1h" : w === "7d" ? "7d" : "24h"}
+              </button>
+            ))}
+          </div>
+          <div className="chg-list">
+            {changes.length === 0 ? (
+              <div className="chg-empty">No topology changes in this window.</div>
+            ) : (
+              changes.map((change) => (
+                <button type="button" key={change.id} className={`chg-item sev-${change.severity || "info"}`} onClick={() => onPickChange(change)}>
+                  <span className="chg-time">{formatChangeTime(change.at)}</span>
+                  <span className="chg-sum">{change.summary}</span>
+                </button>
+              ))
+            )}
+          </div>
+        </div>
+
+        {diagnostics && (
+          <div className="section">
+            <div className="sec-head">
+              <span className="bar" />
+              <span className="sec-title">Diagnostics</span>
+            </div>
+            <dl className="diag-grid">
+              <div><dt>Physical edges</dt><dd>{diagnostics.physical_edges}</dd></div>
+              <div><dt>High confidence</dt><dd>{diagnostics.high_confidence}</dd></div>
+              <div><dt>Medium confidence</dt><dd>{diagnostics.medium_confidence}</dd></div>
+              <div><dt>Low confidence</dt><dd>{diagnostics.low_confidence}</dd></div>
+              <div><dt>Unresolved nodes</dt><dd>{diagnostics.unresolved_nodes}</dd></div>
+              <div><dt>Duplicate identities</dt><dd>{diagnostics.duplicate_identities}</dd></div>
+              <div><dt>Orphans</dt><dd>{diagnostics.orphans}</dd></div>
+            </dl>
+            {labChecks && labChecks.applicable > 0 && (
+              <div className={`lab-check${labChecks.ok ? " ok" : " bad"}`}>
+                Lab checks {labChecks.passed}/{labChecks.applicable}
+                {labChecks.wireless_under_ap === false ? " · Wi-Fi parent mismatch" : ""}
+              </div>
+            )}
+          </div>
+        )}
+
+        <div className="section">
+          <div className="sec-head">
+            <span className="bar" />
+            <span className="sec-title">Saved views</span>
+          </div>
+          <div className="view-list">
+            {views.length === 0 && <div className="chg-empty">No saved views yet.</div>}
+            {views.map((view) => (
+              <div key={view.id} className={`view-item${activeViewId === view.id ? " on" : ""}`}>
+                <button type="button" className="view-star" title={view.starred ? "Unstar" : "Star"} onClick={() => onStarView(view)}>
+                  {view.starred ? "★" : "☆"}
+                </button>
+                <button type="button" className="view-name" onClick={() => onApplyView(view)}>
+                  {view.name}
+                  {view.shared ? <span className="view-tag">shared</span> : <span className="view-tag">personal</span>}
+                </button>
+              </div>
+            ))}
+          </div>
+          <button type="button" className="side-add" onClick={onSaveView}>
+            + Save current view
+          </button>
+        </div>
+
+        <div className="section">
+          <div className="sec-head">
+            <span className="bar" />
+            <span className="sec-title">Groups</span>
+          </div>
+          <div className="view-list">
+            {groups.length === 0 && <div className="chg-empty">No logical groups yet.</div>}
+            {groups.map((group) => (
+              <button type="button" key={group.id} className="view-name group-btn" onClick={() => onApplyGroup(group)}>
+                {group.name}
+                <span className="view-tag">{group.member_ids.length}</span>
+              </button>
+            ))}
+          </div>
+          <button type="button" className="side-add" onClick={onCreateGroup}>
+            + Create group
+          </button>
+        </div>
+
+        {focused && (
+          <div className="section">
+            <button type="button" className="fix-btn" onClick={onShowAll}>
+              Show all
+            </button>
+          </div>
+        )}
 
         <div className="section">
           <div className="sec-head">

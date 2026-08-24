@@ -1,17 +1,42 @@
 import React from "react";
-import { executeRemediation, fetchTopology, saveEntityMerge } from "./api/client";
+import {
+  executeRemediation,
+  fetchChanges,
+  fetchTopology,
+  listGroups,
+  listViews,
+  saveEntityMerge,
+  saveGroup as saveSharedGroup,
+  saveView as saveSharedView,
+} from "./api/client";
 import { CytoscapeStage, type StageHandle } from "./components/CytoscapeStage";
 import { RemediationModal } from "./components/RemediationModal";
-import { Sidebar } from "./components/Sidebar";
+import { Sidebar, type ChangeWindow } from "./components/Sidebar";
 import { TopBar } from "./components/TopBar";
 import { TopologyDebugPanel } from "./components/TopologyDebugPanel";
+import { WorkspaceDialog } from "./components/WorkspaceDialog";
 import { clearMerakiRequestCaches, getNetworksForOrg, getOrganizationsForApiKey } from "./merakiSession";
 import { SAMPLE_GRAPH } from "./sampleTopology";
 import type { MergeRequest } from "./components/DetailDrawer";
 import { applyLocalEntityMerge, switchPortOfNode } from "./topology/entityMerge";
-import { DEVICE_CLASS_ORDER, DEVICE_CLASSES, asDeviceClass, classVisuals } from "./topology/deviceClass";
+import { DEVICE_CLASS_ORDER, DEVICE_CLASSES, asDeviceClass } from "./topology/deviceClass";
+import { computeDiagnostics } from "./topology/diagnostics";
+import { validateExpectations } from "./topology/liveExpectations";
 import { applyTheme, loadPrefs, savePrefs, type UiPrefs } from "./topology/prefs";
-import type { RemediationAction, TopologyGraph } from "./types/topology";
+import { filterChanges, sampleChanges } from "./topology/sampleChanges";
+import { filterSearchHits } from "./topology/searchIndex";
+import {
+  defaultDemoGroups,
+  defaultDemoViews,
+  loadPersonalGroups,
+  loadPersonalViews,
+  mergeViews,
+  prefsFromView,
+  savePersonalGroups,
+  savePersonalViews,
+  viewFromWorkspace,
+} from "./topology/workspace";
+import type { LogicalGroup, RemediationAction, SavedView, SearchHit, TopologyChange, TopologyDiagnostics, TopologyGraph } from "./types/topology";
 
 export function App() {
   const [prefs, setPrefsState] = React.useState<UiPrefs>(() => {
@@ -41,10 +66,53 @@ export function App() {
   const [exportOpen, setExportOpen] = React.useState(false);
   const [search, setSearch] = React.useState("");
   const [searchOpen, setSearchOpen] = React.useState(false);
-  const [searchIndex, setSearchIndex] = React.useState<{ id: string; label: string; ip: string; type: string; color: string }[]>([]);
+  const [searchIndex, setSearchIndex] = React.useState<SearchHit[]>([]);
   const [visibleCount, setVisibleCount] = React.useState(0);
   const [loading, setLoading] = React.useState(false);
+  const [changes, setChanges] = React.useState<TopologyChange[]>([]);
+  const [changeWindow, setChangeWindow] = React.useState<ChangeWindow>("24h");
+  const [views, setViews] = React.useState<SavedView[]>([]);
+  const [groups, setGroups] = React.useState<LogicalGroup[]>([]);
+  const [activeViewId, setActiveViewId] = React.useState<string | null>(null);
+  const [dialog, setDialog] = React.useState<null | "view" | "group">(null);
+  const [pendingGroupIds, setPendingGroupIds] = React.useState<string[]>([]);
   const stageRef = React.useRef<StageHandle>(null);
+
+  const isDemo = orgId === "O_DEMO" || graph?.organization.id === "O_DEMO";
+
+  const loadWorkspace = React.useCallback(async (oid: string, nid: string, demo: boolean) => {
+    if (!oid || !nid) return;
+    if (demo) {
+      let personal = loadPersonalViews(oid, nid);
+      if (!personal.length) {
+        personal = defaultDemoViews();
+        savePersonalViews(oid, nid, personal);
+      }
+      setViews(personal);
+      let localGroups = loadPersonalGroups(oid, nid);
+      if (!localGroups.length) {
+        localGroups = defaultDemoGroups();
+        savePersonalGroups(oid, nid, localGroups);
+      }
+      setGroups(localGroups);
+      return;
+    }
+    const personal = loadPersonalViews(oid, nid);
+    try {
+      const shared = await listViews(oid, nid);
+      setViews(mergeViews(Array.isArray(shared) ? shared : [], personal));
+    } catch {
+      setViews(personal);
+    }
+    const personalGroups = loadPersonalGroups(oid, nid);
+    try {
+      const sharedGroups = await listGroups(oid, nid);
+      const seen = new Set((Array.isArray(sharedGroups) ? sharedGroups : []).map((g) => g.id));
+      setGroups([...(Array.isArray(sharedGroups) ? sharedGroups : []), ...personalGroups.filter((g) => !seen.has(g.id))]);
+    } catch {
+      setGroups(personalGroups);
+    }
+  }, []);
 
   const loadTopology = React.useCallback(async () => {
     if (!orgId || !networkId || orgId === "O_DEMO") return;
@@ -53,12 +121,14 @@ export function App() {
       const data = await fetchTopology(orgId, networkId);
       setGraph(data);
       setApiError("");
-    } catch (error: any) {
-      setApiError(error?.response?.data?.detail || error?.message || "Failed to load topology.");
+      await loadWorkspace(orgId, networkId, false);
+    } catch (error: unknown) {
+      const err = error as { response?: { data?: { detail?: string } }; message?: string };
+      setApiError(err?.response?.data?.detail || err?.message || "Failed to load topology.");
     } finally {
       setLoading(false);
     }
-  }, [orgId, networkId]);
+  }, [orgId, networkId, loadWorkspace]);
 
   const connectApiKey = React.useCallback(async () => {
     if (!apiKey.trim()) {
@@ -73,8 +143,9 @@ export function App() {
       setOrgs(organizations);
       setApiConnected(true);
       setApiError("");
-    } catch (error: any) {
-      const detail = error?.response?.data?.detail || error?.message || "Failed to validate API key.";
+    } catch (error: unknown) {
+      const err = error as { response?: { data?: { detail?: string } }; message?: string };
+      const detail = err?.response?.data?.detail || err?.message || "Failed to validate API key.";
       setApiConnected(false);
       setApiError(detail);
       setOrgs([]);
@@ -122,9 +193,29 @@ export function App() {
   }, [orgId, apiConnected]);
 
   React.useEffect(() => {
-    if (!apiConnected || !orgId || !networkId) return;
+    if (!apiConnected || !orgId || !networkId || orgId === "O_DEMO") return;
     void loadTopology();
   }, [apiConnected, orgId, networkId, loadTopology]);
+
+  React.useEffect(() => {
+    if (!orgId || !networkId || orgId === "O_DEMO" || !graph) return;
+    let cancelled = false;
+    fetchChanges(orgId, networkId, changeWindow)
+      .then((hist) => {
+        if (!cancelled) setChanges(hist.changes || []);
+      })
+      .catch(() => {
+        if (!cancelled) setChanges([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [orgId, networkId, changeWindow, graph]);
+
+  React.useEffect(() => {
+    if (!isDemo || !graph) return;
+    setChanges(filterChanges(sampleChanges(), changeWindow));
+  }, [isDemo, graph, changeWindow]);
 
   React.useEffect(() => {
     const close = () => setExportOpen(false);
@@ -191,14 +282,16 @@ export function App() {
     await loadTopology();
   };
 
-  const hits = React.useMemo(() => {
-    const q = search.trim().toLowerCase();
-    if (!q) return [];
-    return searchIndex
-      .filter((h) => h.label.toLowerCase().includes(q) || h.ip.toLowerCase().includes(q) || h.id.toLowerCase().includes(q))
-      .sort((a, b) => classVisuals(asDeviceClass(b.type)).tier - classVisuals(asDeviceClass(a.type)).tier)
-      .slice(0, 10);
-  }, [search, searchIndex]);
+  const hits = React.useMemo(() => filterSearchHits(searchIndex, search), [search, searchIndex]);
+
+  const diagnostics = React.useMemo<TopologyDiagnostics | null>(() => {
+    if (!graph) return null;
+    const fromDebug = graph.topology_debug?.diagnostics as TopologyDiagnostics | undefined;
+    if (fromDebug && typeof fromDebug.physical_edges === "number") return fromDebug;
+    return computeDiagnostics(graph);
+  }, [graph]);
+
+  const labChecks = React.useMemo(() => (graph ? validateExpectations(graph) : null), [graph]);
 
   const categories = React.useMemo(() => {
     const present = new Set((graph?.nodes || []).map((n) => asDeviceClass(String(n.device_class))));
@@ -236,6 +329,105 @@ export function App() {
     setOrgs([{ id: "O_DEMO", name: "Demo Org" }]);
     setNets([{ id: "N_DEMO", name: "HQ Demo" }]);
     setApiError("");
+    setChanges(filterChanges(sampleChanges(), changeWindow));
+    void loadWorkspace("O_DEMO", "N_DEMO", true);
+  };
+
+  const applyView = React.useCallback(
+    (view: SavedView) => {
+      setActiveViewId(view.id);
+      setPrefs(prefsFromView(view, prefs));
+      window.setTimeout(() => {
+        stageRef.current?.applyCamera(view);
+        if (view.selected_nodes?.length) stageRef.current?.selectNodes(view.selected_nodes, true);
+        const port = view.selected_ports?.[0];
+        if (port && port.includes(":")) {
+          const [serial, portId] = port.split(":");
+          stageRef.current?.highlightPort(serial, portId);
+        }
+      }, 120);
+    },
+    [prefs, setPrefs]
+  );
+
+  const persistView = async (value: { name: string; shared: boolean; starred: boolean }) => {
+    const oid = orgId || String(graph?.organization.id || "O_DEMO");
+    const nid = networkId || String(graph?.network.id || "N_DEMO");
+    const camera = stageRef.current?.getCamera() || { zoom: 1, pan: { x: 0, y: 0 }, positions: {} };
+    const selected = stageRef.current?.getSelectedIds() || [];
+    const view = viewFromWorkspace(value.name, prefs, camera, selected, {
+      shared: value.shared,
+      starred: value.starred,
+    });
+    if (value.shared) {
+      try {
+        const saved = await saveSharedView(oid, nid, view);
+        setViews((prev) => mergeViews([saved], prev.filter((v) => !v.shared || v.id !== saved.id)));
+        setActiveViewId(saved.id);
+        setDialog(null);
+        return;
+      } catch {
+        /* fall through to personal */
+      }
+    }
+    const next = [...loadPersonalViews(oid, nid).filter((v) => v.id !== view.id), { ...view, shared: false }];
+    savePersonalViews(oid, nid, next);
+    setViews((prev) => mergeViews(prev.filter((v) => v.shared), next));
+    setActiveViewId(view.id);
+    setDialog(null);
+  };
+
+  const starView = async (view: SavedView) => {
+    const oid = orgId || "O_DEMO";
+    const nid = networkId || "N_DEMO";
+    const patched = { ...view, starred: !view.starred, updated_at: new Date().toISOString() };
+    if (view.shared) {
+      try {
+        const saved = await saveSharedView(oid, nid, patched);
+        setViews((prev) => mergeViews([saved], prev.filter((v) => v.id !== saved.id)));
+        return;
+      } catch {
+        /* personal fallback */
+      }
+    }
+    const next = loadPersonalViews(oid, nid).map((v) => (v.id === view.id ? patched : v));
+    if (!next.some((v) => v.id === view.id)) next.push(patched);
+    savePersonalViews(oid, nid, next);
+    setViews((prev) => prev.map((v) => (v.id === view.id ? patched : v)).sort((a, b) => Number(Boolean(b.starred)) - Number(Boolean(a.starred))));
+  };
+
+  const persistGroup = async (value: { name: string }) => {
+    const oid = orgId || "O_DEMO";
+    const nid = networkId || "N_DEMO";
+    const memberIds = pendingGroupIds.length ? pendingGroupIds : stageRef.current?.getSelectedIds() || [];
+    const group: LogicalGroup = { id: `grp-${Date.now()}`, name: value.name, member_ids: memberIds };
+    if (memberIds.length) {
+      try {
+        const saved = await saveSharedGroup(oid, nid, group);
+        setGroups((prev) => [...prev.filter((g) => g.id !== saved.id), saved]);
+        setDialog(null);
+        setPendingGroupIds([]);
+        return;
+      } catch {
+        /* personal */
+      }
+    }
+    const next = [...loadPersonalGroups(oid, nid).filter((g) => g.id !== group.id), group];
+    savePersonalGroups(oid, nid, next);
+    setGroups(next);
+    setDialog(null);
+    setPendingGroupIds([]);
+  };
+
+  const pickChange = (change: TopologyChange) => {
+    if (change.node_id) {
+      stageRef.current?.selectNode(change.node_id, true);
+      stageRef.current?.runTrace(change.node_id);
+    }
+    if (change.port && change.port.includes(":")) {
+      const [serial, portId] = change.port.split(":");
+      stageRef.current?.highlightPort(serial, portId);
+    }
   };
 
   return (
@@ -279,14 +471,32 @@ export function App() {
           searchOpen={searchOpen && Boolean(search)}
           setSearchOpen={setSearchOpen}
           onPickSearch={(id) => {
-            setSearch(id);
             setSearchOpen(false);
             stageRef.current?.selectNode(id, true);
+            stageRef.current?.runTrace(id);
           }}
           categories={categories}
           platforms={platforms}
           firmware={firmware}
           visibleCount={visibleCount}
+          changes={changes}
+          changeWindow={changeWindow}
+          setChangeWindow={setChangeWindow}
+          onPickChange={pickChange}
+          diagnostics={diagnostics}
+          labChecks={labChecks}
+          views={views}
+          activeViewId={activeViewId}
+          onApplyView={applyView}
+          onSaveView={() => setDialog("view")}
+          onStarView={(view) => void starView(view)}
+          groups={groups}
+          onApplyGroup={(group) => stageRef.current?.selectNodes(group.member_ids, true)}
+          onCreateGroup={() => {
+            setPendingGroupIds(stageRef.current?.getSelectedIds() || []);
+            setDialog("group");
+          }}
+          onShowAll={() => setPrefs({ focusIds: [], hiddenNodeIds: [] })}
         />
         <CytoscapeStage
           ref={stageRef}
@@ -305,6 +515,12 @@ export function App() {
               ? "Fetching devices, LLDP/CDP links, ports and clients from Meraki."
               : "Connect a Meraki API key and choose an organization + network, or load the sample topology to preview the physical Packet Express map."
           }
+          changes={changes}
+          onRequestSaveView={() => setDialog("view")}
+          onRequestCreateGroup={(ids) => {
+            setPendingGroupIds(ids);
+            setDialog("group");
+          }}
         />
       </div>
       {!graph && !loading && (
@@ -330,13 +546,32 @@ export function App() {
           ) : null}
         </span>
         <span>
-          Meraki Ops <b>v1.1</b>
+          Meraki Ops <b>v1.2</b>
         </span>
         <span className="ft-sep">·</span>
         <span>Packet Express topology</span>
       </footer>
       <RemediationModal action={pendingAction} onConfirm={applyAction} onClose={() => setPendingAction(undefined)} />
       <TopologyDebugPanel graph={graph} open={topoDebugOpen} onClose={() => setTopoDebugOpen(false)} />
+      <WorkspaceDialog
+        open={dialog === "view"}
+        title="Save dashboard view"
+        submitLabel="Save view"
+        showScope
+        onClose={() => setDialog(null)}
+        onSubmit={(value) => void persistView(value)}
+      />
+      <WorkspaceDialog
+        open={dialog === "group"}
+        title="Create group"
+        submitLabel="Create group"
+        nameLabel="Group name"
+        onClose={() => {
+          setDialog(null);
+          setPendingGroupIds([]);
+        }}
+        onSubmit={(value) => void persistGroup(value)}
+      />
     </div>
   );
 }

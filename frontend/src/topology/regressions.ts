@@ -1,6 +1,9 @@
 import { SAMPLE_GRAPH } from "../sampleTopology";
-import { presentGraph } from "./presentGraph";
+import { validateExpectations } from "./liveExpectations";
+import { focusKeepIds, presentGraph } from "./presentGraph";
+import { nodeHaystack } from "./searchIndex";
 import { traceToInternet } from "./tracePath";
+import type { TopologyGraph, TopologyNode } from "../types/topology";
 
 function assert(cond: unknown, message: string): void {
   if (!cond) throw new Error(message);
@@ -54,6 +57,88 @@ assert(SAMPLE_GRAPH.nodes.some((n) => n.id === "Q2XX-MV-0001"), "sample camera i
 assert(
   SAMPLE_GRAPH.links.some((l) => l.id === "sw-camera" && l.source === "Q2XX-MS-0001"),
   "sample camera is adjacent on a switch port"
+);
+
+const lab = validateExpectations(SAMPLE_GRAPH);
+assert(lab.ok, `sample lab edges should pass, got ${JSON.stringify(lab.checks.filter((c) => c.status !== "pass"))}`);
+assert(lab.applicable === 7, `expected 7 applicable lab edges, got ${lab.applicable}`);
+assert(lab.wireless_under_ap, "wireless clients parent to the AP");
+
+const keep = focusKeepIds(SAMPLE_GRAPH, ["Q2XX-MS-0001", "SERVER-01", "client-nas", "client-rpi5"]);
+assert(keep.has("SERVER-01") && keep.has("client-nas") && keep.has("client-rpi5"), "focus keeps the selected set");
+assert(keep.has("client-ha") && keep.has("client-vm"), "focus expands server workloads");
+assert(!keep.has("Q2XX-AP-0001") && !keep.has("client-iphone"), "focusing the switch does not pull the AP or Wi-Fi clients");
+
+const focused = presentGraph(SAMPLE_GRAPH, {
+  visibilityMode: "physical_clients",
+  collapseWireless: true,
+  collapseDownstream: true,
+  expandedGroups: [],
+  focusIds: ["Q2XX-MS-0001", "SERVER-01", "client-nas", "client-rpi5"],
+});
+assert(
+  !focused.nodes.some((n) => n.id === "Q2XX-AP-0001" || n.subtype === "wireless_group"),
+  "focus selection hides the rest of the fabric"
+);
+
+const iphone = SAMPLE_GRAPH.nodes.find((n) => n.id === "client-iphone")!;
+const hay = nodeHaystack(SAMPLE_GRAPH, iphone);
+assert(hay.includes("10.1.2.83"), "search indexes management IP");
+assert(hay.includes("a4:83:e7:00:00:83"), "search indexes MAC");
+assert(hay.includes("home"), "search indexes SSID");
+const ms = SAMPLE_GRAPH.nodes.find((n) => n.id === "Q2XX-MS-0001")!;
+const msHay = nodeHaystack(SAMPLE_GRAPH, ms);
+assert(msHay.includes("q2xx-ms-0001"), "search indexes serial");
+assert(msHay.includes("14"), "search indexes switch ports");
+assert(msHay.includes("10"), "search indexes VLAN");
+
+function fatGraph(extraClients: number): TopologyGraph {
+  const nodes: TopologyNode[] = SAMPLE_GRAPH.nodes.map((n) => ({ ...n, metadata: { ...n.metadata } }));
+  const links = SAMPLE_GRAPH.links.map((l) => ({ ...l }));
+  const template = SAMPLE_GRAPH.nodes.find((n) => n.id === "client-iphone")!;
+  for (let i = 0; i < extraClients; i++) {
+    const id = `wifi-load-${i}`;
+    nodes.push({
+      ...template,
+      id,
+      label: `Phone ${i}`,
+      hostname: `Phone ${i}`,
+      management_ip: `10.9.${Math.floor(i / 250)}.${i % 250}`,
+      metadata: { ...template.metadata, parent_id: "Q2XX-AP-0001" },
+    });
+    links.push({
+      ...SAMPLE_GRAPH.links.find((l) => l.id === "ap-iphone")!,
+      id: `ap-load-${i}`,
+      source: "Q2XX-AP-0001",
+      target: id,
+    });
+  }
+  return { ...SAMPLE_GRAPH, nodes, links };
+}
+
+const scaled = presentGraph(fatGraph(250), {
+  visibilityMode: "physical",
+  collapseWireless: true,
+  collapseDownstream: true,
+  expandedGroups: [],
+});
+assert(
+  scaled.nodes.length === physical.nodes.length,
+  `physical mode stays compact with 250 extra clients (${scaled.nodes.length} vs ${physical.nodes.length})`
+);
+const collapsedWifi = presentGraph(fatGraph(1000), {
+  visibilityMode: "physical_clients",
+  collapseWireless: true,
+  collapseDownstream: true,
+  expandedGroups: [],
+});
+assert(
+  collapsedWifi.nodes.filter((n) => n.subtype === "wireless").length === 0,
+  "1,000 wireless clients collapse instead of rendering individually"
+);
+assert(
+  collapsedWifi.nodes.some((n) => n.subtype === "wireless_group"),
+  "physical+clients still emits a single wireless group at 1,000 clients"
 );
 
 console.log("topology presentation regressions ok");

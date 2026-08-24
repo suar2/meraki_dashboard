@@ -7,7 +7,10 @@ from typing import Any
 from app.config import settings
 from app.models.schemas import StackMember, TopologyGraph, TopologyLink, TopologyNode, TopologySummary
 from app.services.device_class import classify_device, elect_core_switch_ids
+from app.services.diagnostics import compute_diagnostics
+from app.services.history_service import HistoryService
 from app.services.layout_service import LayoutService
+from app.services.live_expectations import validate_expectations
 from app.services.meraki_client import MerakiAPIError, MerakiClient
 from app.services.validation_service import ValidationService
 from app.storage.file_store import JsonFileStore
@@ -22,11 +25,19 @@ logger = logging.getLogger(__name__)
 
 
 class TopologyService:
-    def __init__(self, meraki: MerakiClient, validator: ValidationService, layouts: LayoutService, store: JsonFileStore) -> None:
+    def __init__(
+        self,
+        meraki: MerakiClient,
+        validator: ValidationService,
+        layouts: LayoutService,
+        store: JsonFileStore,
+        history: HistoryService | None = None,
+    ) -> None:
         self.meraki = meraki
         self.validator = validator
         self.layouts = layouts
         self.store = store
+        self.history = history
         self.entity_merges = EntityMergeService(store)
 
     def _cache_name(self, org_id: str, network_id: str) -> str:
@@ -594,5 +605,12 @@ class TopologyService:
             port_peer_hints=port_peer_hints,
             topology_debug=topology_debug,
         )
+        graph.topology_debug["diagnostics"] = compute_diagnostics(graph)
+        graph.topology_debug["expectations"] = validate_expectations(graph)
+        if self.history:
+            try:
+                self.history.record_graph(graph)
+            except Exception:
+                logger.exception("Failed to record topology snapshot for %s/%s", org_id, network_id)
         self._save_cache(graph)
         return graph

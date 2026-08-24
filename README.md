@@ -8,7 +8,7 @@ The topology canvas follows the Packet Express Neighbor Explorer experience (Cyt
 
 - Frontend: React + TypeScript + Vite + Cytoscape + cytoscape-fcose
 - Backend: FastAPI + httpx
-- Persistence: JSON-backed storage for layout and audit logs (`backend/data/`)
+- Persistence: JSON-backed storage for layout, audit logs, topology snapshots, saved views, and logical groups (`backend/data/`)
 - Topology source of truth: `GET /networks/{id}/topology/linkLayer` nodes first, then links, validated with per-device LLDP/CDP and switch port status. Clients enrich the graph; they do not invent duplicate managed devices.
 
 ## Prerequisites
@@ -38,7 +38,7 @@ Required/standardized variables:
 - `REQUEST_TIMEOUT_SECONDS`: per-request timeout to Meraki APIs
 - `MAX_RETRIES`: retry count for transient/rate-limit failures
 - `RETRY_BACKOFF_SECONDS`: exponential retry base delay
-- `DATA_DIR`: persistence path for layout, audit, and topology cache
+- `DATA_DIR`: persistence path for layout, audit, topology cache, history snapshots, saved views, and logical groups
 - `SECRET_KEY`: required; must not be default in production
 - `CORS_ORIGINS`: comma-separated origin list (for API CORS)
 - `CACHE_TTL_SECONDS`: topology cache TTL
@@ -61,6 +61,10 @@ Backend endpoints (all under `/api` as implemented in `backend/app/api/routes.py
 - `GET /api/organizations`
 - `GET /api/organizations/{org_id}/networks`
 - `GET /api/topology/{org_id}/{network_id}`
+- `GET /api/topology/{org_id}/{network_id}/changes?window=1h|24h|7d` — snapshot-derived change events
+- `GET /api/topology/{org_id}/{network_id}/validate` — live lab adjacency fixture (FW-01↔MS130, MS130 p2↔MR36, …)
+- `GET /api/views/{org_id}/{network_id}` / `POST` / `DELETE /api/views/{org_id}/{network_id}/{view_id}` — shared saved views
+- `GET /api/groups/{org_id}/{network_id}` / `POST` / `DELETE /api/groups/{org_id}/{network_id}/{group_id}` — logical groups
 - `GET /api/entities/merges/{org_id}/{network_id}`
 - `POST /api/entities/merge` — persist a multi-NIC chassis merge
 - `DELETE /api/entities/merge/{org_id}/{network_id}/{merge_id}`
@@ -231,10 +235,18 @@ The sidebar supports three visibility modes:
 - **Physical + Clients** — physical devices plus wired and wireless endpoints (default). Dense wireless and downstream VM leaves collapse to a single group such as `24 Wireless Clients` until you expand them
 - **Full** — inferred WAN CPE and other unmanaged neighbors as well
 
-Tree view defaults to collapsed client groups. Selecting a switch opens a physical port strip (connected / unused / down, PoE, access/trunk, VLAN, speed, client count, peer). Click a jack to highlight that port's topology branch. Right-click a node or use **Trace to Internet** to fade everything except the path to the MX/WAN. Physical links show confidence plus an evidence checklist (linkLayer, LLDP, deviceMac, switch port status, client history).
+The sidebar also has:
+
+- **Changes (1h / 24h / 7d)** — appeared, disappeared, port moves, AP moves, uplink changes, LLDP neighbors, access↔trunk, VLAN/native VLAN, firmware, and material client-count shifts. Click an event to focus the device and path.
+- **Diagnostics** — physical vs wireless edges, high/medium/low confidence, unresolved nodes, duplicate identities, orphans, plus lab-check results when the expected live relationships are present.
+- **Saved views** — personal (this browser) or shared (FastAPI). A view restores mode, filters, expanded groups, focus/hidden sets, camera, and selection.
+- **Logical groups** — named member sets that Meraki itself does not have (for example Server Infrastructure).
+
+Tree view defaults to collapsed client groups. Drag on empty canvas to box-select; Ctrl/Cmd-click toggles, Shift-click adds, Esc/click-empty clears, Ctrl/Cmd-A selects visible nodes. Multi-select opens Focus / Fit / Trace / Save view / Create group / Hide. **Focus selection** hides everything except the selection and descendants of non-switch members (server workloads stay; the rest of the switch fabric does not). Selecting a switch opens a physical port strip with config, status, PoE, VLANs, LLDP/CDP, errors, learned clients, topology peer, and last changes. Right-click a node or use **Trace to Internet** to fade everything except the path to the MX/WAN. Physical links show confidence plus an evidence checklist (linkLayer, LLDP, deviceMac, switch port status, client history).
+
+Search matches hostname, MAC, IP, serial, port, VLAN, model, and SSID, then focuses the device and traces the path upstream.
 
 Other topology filters:
-- Search by device label/serial/model/MAC/IP/port metadata
 - Mismatches only
 - Show wireless links
 - Wired only / Wireless only
@@ -265,7 +277,7 @@ Run backend unit tests (fixture-based, no live Meraki dependency):
 python -m unittest discover -s backend/tests -p "test_*.py"
 ```
 
-Covered checks include topology normalization edge-cases (alias matching + dedupe), validation rules, remediation allow-list enforcement, and audit payload completeness.
+Covered checks include topology normalization, change detection diffs, lab adjacency fixtures, saved views, validation rules, remediation allow-list enforcement, and audit payload completeness. Frontend presentation regressions (`npm test` in `frontend/`) cover sample adjacencies, focus selection, search haystacks, and 250/1,000-client collapse.
 
 ## Production readiness (manual / CI)
 

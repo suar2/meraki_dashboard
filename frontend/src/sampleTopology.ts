@@ -53,14 +53,31 @@ function link(partial: Partial<TopologyLink> & Pick<TopologyLink, "id" | "source
     source_device_class: "",
     target_device_class: "",
     interface_role: "",
-    discovery_sources: partial.discovery_sources || [partial.discovery_method || "lldp_cdp"],
+      discovery_sources: partial.discovery_sources || [partial.discovery_method || "lldp_cdp"],
     identity_resolution: partial.identity_resolution || {},
     ...partial,
+    confidence:
+      partial.confidence ||
+      (partial.link_type === "discovered_partial" ? "low" : partial.discovery_method === "physical_attachment" ? "medium" : "high"),
   };
 }
 
-function catalogPort(portId: string, extra?: { type?: string; status?: string; speed?: string; poe?: boolean; name?: string; clients?: number }) {
+function catalogPort(
+  portId: string,
+  extra?: {
+    type?: string;
+    status?: string;
+    speed?: string;
+    poe?: boolean;
+    name?: string;
+    clients?: number;
+    nativeVlan?: number;
+    vlan?: number;
+    lldp?: Record<string, unknown>;
+  }
+) {
   const connected = extra?.status === "Connected";
+  const trunk = extra?.type === "trunk";
   return {
     portId,
     config: {
@@ -68,9 +85,9 @@ function catalogPort(portId: string, extra?: { type?: string; status?: string; s
       name: extra?.name || "",
       type: extra?.type || "access",
       enabled: true,
-      vlan: extra?.type === "trunk" ? undefined : 10,
-      nativeVlan: extra?.type === "trunk" ? 1 : undefined,
-      allowedVlans: extra?.type === "trunk" ? "1,10,20,30" : undefined,
+      vlan: trunk ? undefined : extra?.vlan ?? 10,
+      nativeVlan: trunk ? extra?.nativeVlan ?? 1 : extra?.nativeVlan,
+      allowedVlans: trunk ? "1,10,20,30" : undefined,
       poeEnabled: extra?.poe ?? false,
     },
     status: {
@@ -78,6 +95,7 @@ function catalogPort(portId: string, extra?: { type?: string; status?: string; s
       status: extra?.status || "Disconnected",
       speed: connected ? extra?.speed || "1 Gbps" : "",
       clientCount: connected ? extra?.clients ?? 1 : 0,
+      lldp: extra?.lldp,
     },
     connectedPeers: [],
   };
@@ -118,7 +136,7 @@ export const SAMPLE_GRAPH: TopologyGraph = {
       software_version: "CS 15.21",
       serial: MS,
       device_class: "core",
-      metadata: { model: "MS120-8FP", productType: "switch", lanIp: "10.1.2.2", firmware: "CS 15.21", status: "online" },
+      metadata: { model: "MS120-8FP", productType: "switch", lanIp: "10.1.2.2", firmware: "CS 15.21", status: "online", mac: "00:18:0a:00:00:02" },
     }),
     node({
       id: AP,
@@ -178,7 +196,7 @@ export const SAMPLE_GRAPH: TopologyGraph = {
       managed: false,
       device_class: "client",
       serial: "",
-      metadata: { description: "Pi4", ip: "10.1.2.40", os: "Linux" },
+      metadata: { description: "Pi4", ip: "10.1.2.40", os: "Linux", mac: "b8:27:eb:00:00:40" },
     }),
     node({
       id: "client-rpi5",
@@ -191,7 +209,7 @@ export const SAMPLE_GRAPH: TopologyGraph = {
       managed: false,
       device_class: "client",
       serial: "",
-      metadata: { description: "RPi5", ip: "10.1.2.41", os: "Linux" },
+      metadata: { description: "RPi5", ip: "10.1.2.41", os: "Linux", mac: "2c:cf:67:00:00:41" },
     }),
     node({
       id: "client-nas",
@@ -204,7 +222,7 @@ export const SAMPLE_GRAPH: TopologyGraph = {
       managed: false,
       device_class: "server",
       serial: "",
-      metadata: { description: "NAS", ip: "10.1.2.30" },
+      metadata: { description: "NAS", ip: "10.1.2.30", mac: "00:11:32:00:00:30" },
     }),
     node({
       id: "client-ha",
@@ -304,7 +322,7 @@ export const SAMPLE_GRAPH: TopologyGraph = {
       managed: false,
       device_class: "client",
       serial: "",
-      metadata: { description: "Suars-iPhone", ssid: "Home", os: "iOS", parent_id: AP },
+      metadata: { description: "Suars-iPhone", ssid: "Home", os: "iOS", parent_id: AP, mac: "a4:83:e7:00:00:83" },
     }),
     node({
       id: "neighbor-wan",
@@ -437,24 +455,37 @@ export const SAMPLE_GRAPH: TopologyGraph = {
   switch_ports: {
     [MS]: [
       catalogPort("1", { type: "trunk", status: "Connected", name: "MX uplink" }),
-      catalogPort("2", { type: "trunk", status: "Connected", poe: true, name: "MR36 AP", clients: 12 }),
+      catalogPort("2", {
+        type: "trunk",
+        status: "Connected",
+        poe: true,
+        name: "MR36 AP",
+        clients: 12,
+        lldp: { systemName: "MR36 AP", chassisId: "00:18:0a:00:00:10" },
+      }),
       catalogPort("3"),
       catalogPort("4", { type: "access", status: "Connected", name: "Server mgmt" }),
       catalogPort("5", { type: "access", status: "Connected", name: "Pi4" }),
       catalogPort("6"),
       catalogPort("7", { type: "access", status: "Connected", name: "NAS" }),
-      catalogPort("8", { type: "access", status: "Connected", poe: true, name: "Main - camera" }),
+      catalogPort("8", {
+        type: "access",
+        status: "Connected",
+        poe: true,
+        name: "Main - camera",
+        lldp: { systemName: "Main - camera", chassisId: "00:18:0a:00:00:12" },
+      }),
       catalogPort("9"),
       catalogPort("10", { type: "access", status: "Connected", name: "RPi5" }),
       catalogPort("11"),
       catalogPort("12"),
       catalogPort("13", { type: "trunk" }),
-      catalogPort("14", { type: "trunk", status: "Connected", speed: "10 Gbps", name: "Server fabric", clients: 8 }),
+      catalogPort("14", { type: "trunk", status: "Connected", speed: "10 Gbps", name: "Server fabric", clients: 8, nativeVlan: 10 }),
     ],
   },
   clients_by_switch_port: {},
   port_peer_hints: [],
-  topology_debug: { sample: true, physical_model: true },
+  topology_debug: { sample: true, physical_model: true, unresolved_nodes: [] },
 };
 
 (function finalizeSample(graph: TopologyGraph) {
@@ -475,6 +506,22 @@ export const SAMPLE_GRAPH: TopologyGraph = {
     l.source_device_class = src?.device_class || "";
     l.target_device_class = tgt?.device_class || "";
   }
+  const learned: Record<string, Array<Record<string, unknown>>> = {};
+  for (const l of graph.links) {
+    if (l.link_type === "wireless") continue;
+    const serial = String(l.source_port?.serial || "");
+    const portId = String(l.source_port?.portId || "");
+    const tgt = byId[l.target];
+    if (!serial || !portId || !tgt) continue;
+    const key = `${serial}:${portId}`;
+    (learned[key] ||= []).push({
+      label: tgt.hostname || tgt.label,
+      hostname: tgt.hostname || tgt.label,
+      ip: tgt.management_ip,
+      mac: tgt.metadata?.mac,
+    });
+  }
+  graph.clients_by_switch_port = learned;
   for (const n of graph.nodes) {
     n.degree = deg[n.id] || 0;
     n.interfaces = graph.links

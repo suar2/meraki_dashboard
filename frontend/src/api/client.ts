@@ -1,5 +1,5 @@
 import axios from "axios";
-import { RemediationAction, TopologyGraph } from "../types/topology";
+import type { LogicalGroup, RemediationAction, SavedView, TopologyChange, TopologyGraph } from "../types/topology";
 
 const api = axios.create({
   baseURL: "/api",
@@ -30,3 +30,19 @@ export const saveEntityMerge = async (payload: {
   device_class: string;
   interfaces: Array<{ switch_serial: string; port_id: string; role: string; member_id: string }>;
 }) => (await api.post("/entities/merge", payload)).data;
+
+export const fetchChanges = async (orgId: string, networkId: string, window = "24h"): Promise<{ changes: TopologyChange[]; snapshots: Array<{ id: string; captured_at: string; node_count: number }> }> =>
+  (await api.get(`/topology/${orgId}/${networkId}/changes`, { params: { window } })).data;
+
+export const fetchValidate = async (orgId: string, networkId: string) =>
+  (await api.get(`/topology/${orgId}/${networkId}/validate`)).data;
+
+export const listViews = async (orgId: string, networkId: string): Promise<SavedView[]> => (await api.get(`/views/${orgId}/${networkId}`)).data;
+export const saveView = async (orgId: string, networkId: string, view: Partial<SavedView> & { name: string }): Promise<SavedView> =>
+  (await api.post(`/views/${orgId}/${networkId}`, view)).data;
+export const deleteView = async (orgId: string, networkId: string, viewId: string) => api.delete(`/views/${orgId}/${networkId}/${viewId}`);
+
+export const listGroups = async (orgId: string, networkId: string): Promise<LogicalGroup[]> => (await api.get(`/groups/${orgId}/${networkId}`)).data;
+export const saveGroup = async (orgId: string, networkId: string, group: Partial<LogicalGroup> & { name: string }): Promise<LogicalGroup> =>
+  (await api.post(`/groups/${orgId}/${networkId}`, group)).data;
+export const deleteGroup = async (orgId: string, networkId: string, groupId: string) => api.delete(`/groups/${orgId}/${networkId}/${groupId}`);

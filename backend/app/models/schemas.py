@@ -183,3 +183,30 @@ class EntityMergeRequest(BaseModel):
 class EntityMergeRecord(EntityMergeRequest):
     id: str
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+
+class SavedViewPayload(BaseModel):
+    id: str | None = None
+    name: str
+    starred: bool = False
+    view_mode: str = "physical_clients"
+    selected_nodes: list[str] = Field(default_factory=list)
+    hidden_nodes: list[str] = Field(default_factory=list)
+    focus_nodes: list[str] = Field(default_factory=list)
+    expanded_groups: list[str] = Field(default_factory=list)
+    filters: dict[str, Any] = Field(default_factory=dict)
+    positions: dict[str, dict[str, float]] = Field(default_factory=dict)
+    zoom: float | None = None
+    pan: dict[str, float] = Field(default_factory=dict)
+    selected_ports: list[str] = Field(default_factory=list)
+    highlighted_path: list[str] = Field(default_factory=list)
+    layout: str = "breadthfirst"
+    collapse_wireless: bool = True
+    collapse_downstream: bool = True
+
+
+class LogicalGroupPayload(BaseModel):
+    id: str | None = None
+    name: str
+    member_ids: list[str] = Field(default_factory=list)
+

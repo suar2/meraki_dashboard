@@ -23,6 +23,8 @@ export interface UiPrefs {
   severityFilter: SeverityFilter;
   selectedId: string | null;
   selectedKind: "node" | "link" | null;
+  focusIds: string[];
+  hiddenNodeIds: string[];
 }
 
 export const PREFS_KEY = "meraki-ops-ui-prefs";
@@ -49,6 +51,8 @@ export const defaultPrefs = (): UiPrefs => ({
   severityFilter: "all",
   selectedId: null,
   selectedKind: null,
+  focusIds: [],
+  hiddenNodeIds: [],
 });
 
 export function loadPrefs(): UiPrefs {
