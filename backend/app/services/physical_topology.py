@@ -52,12 +52,15 @@ VM_HINTS = (
 )
 
 
+from app.services.identity import normalize_mac
+
+
 def _norm(value: Any) -> str:
     return str(value or "").strip().lower()
 
 
 def _mac(value: Any) -> str:
-    return _norm(value).replace("-", ":")
+    return normalize_mac(value)
 
 
 def canonical_port_id(port_id: str) -> str:
@@ -146,7 +149,7 @@ def index_managed_devices(nodes: dict[str, TopologyNode]) -> dict[str, TopologyN
             index[f"serial:{serial}"] = node
         for mac in (meta.get("mac"), meta.get("macAddress"), node.id):
             hashed = _mac(mac)
-            if hashed and ":" in hashed:
+            if hashed:
                 index[f"mac:{hashed}"] = node
         for ip in (meta.get("lanIp"), meta.get("wan1Ip"), meta.get("ip"), node.management_ip):
             if _norm(ip):
@@ -576,22 +579,41 @@ def apply_physical_port_attachments(
 def prune_orphan_nodes(
     nodes: dict[str, TopologyNode],
     links: list[TopologyLink],
-) -> tuple[dict[str, TopologyNode], list[TopologyLink]]:
+) -> tuple[dict[str, TopologyNode], list[TopologyLink], list[dict[str, Any]]]:
     connected: set[str] = set()
     for link in links:
         connected.add(link.source)
         connected.add(link.target)
     keep: dict[str, TopologyNode] = {}
+    unresolved: list[dict[str, Any]] = []
     for node_id, node in nodes.items():
-        if node.managed or node.type in {"meraki", "neighbor"}:
-            if node.managed or node_id in connected:
-                keep[node_id] = node
-            continue
         if node_id in connected:
             keep[node_id] = node
+            continue
+        meta = node.metadata or {}
+        intentional_root = bool(meta.get("topologyRoot") or meta.get("root"))
+        if not intentional_root and node.subtype in {"firewall"}:
+            intentional_root = True
+        if not intentional_root and str(meta.get("productType") or "").lower() in {"appliance", "securityappliance"}:
+            intentional_root = True
+        if intentional_root:
+            keep[node_id] = node
+            continue
+        unresolved.append(
+            {
+                "reason": "orphan_no_physical_edge",
+                "id": node.id,
+                "label": node.label,
+                "kind": node.subtype or node.type,
+                "mac": meta.get("mac") or node.metadata.get("macAddress") if node.metadata else "",
+                "derivedId": meta.get("derivedId"),
+                "managed": node.managed,
+                "serial": node.serial or meta.get("serial"),
+            }
+        )
     kept_ids = set(keep)
     links = [link for link in links if link.source in kept_ids and link.target in kept_ids]
-    return keep, links
+    return keep, links, unresolved
 
 
 def _expand_merge_members(

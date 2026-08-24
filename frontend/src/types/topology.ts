@@ -96,6 +96,8 @@ export interface TopologyLink {
   source_device_class: string;
   target_device_class: string;
   interface_role?: string;
+  discovery_sources?: string[];
+  identity_resolution?: Record<string, unknown>;
 }
 
 export interface TopologyGraph {

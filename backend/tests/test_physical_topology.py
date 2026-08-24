@@ -320,10 +320,11 @@ class PhysicalTopologyTests(unittest.TestCase):
             ),
         }
         links = [_link(id="p", source="SW1", target="physical-SW1-7", source_port={"serial": "SW1", "portId": "7"})]
-        kept, kept_links = prune_orphan_nodes(nodes, links)
+        kept, kept_links, unresolved = prune_orphan_nodes(nodes, links)
         self.assertNotIn("client-x", kept)
         self.assertIn("physical-SW1-7", kept)
         self.assertEqual(len(kept_links), 1)
+        self.assertTrue(any(item.get("id") == "client-x" for item in unresolved))
 
 
 class ClientLookbackTests(unittest.TestCase):

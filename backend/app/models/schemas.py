@@ -94,6 +94,8 @@ class TopologyLink(BaseModel):
     source_device_class: str = ""
     target_device_class: str = ""
     interface_role: str = ""
+    discovery_sources: list[str] = Field(default_factory=list)
+    identity_resolution: dict[str, Any] = Field(default_factory=dict)
 
 
 class TopologySummary(BaseModel):

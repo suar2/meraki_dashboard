@@ -12,17 +12,11 @@ from app.services.meraki_client import MerakiAPIError, MerakiClient
 from app.services.validation_service import ValidationService
 from app.storage.file_store import JsonFileStore
 from app.services.entity_merge_service import EntityMergeService
-from app.services.physical_topology import (
-    apply_entity_merges,
-    apply_physical_port_attachments,
-    index_managed_devices,
-    prune_orphan_nodes,
-    resolve_managed_device,
-)
+from app.services.identity import human_label, is_derived_id
 from app.services.switchport_client_builder import (
     build_switch_port_catalog,
-    group_wired_clients_by_switch_port,
 )
+from app.services.topology_assembler import assemble_topology, merge_duplicate_links
 
 logger = logging.getLogger(__name__)
 
@@ -36,7 +30,7 @@ class TopologyService:
         self.entity_merges = EntityMergeService(store)
 
     def _cache_name(self, org_id: str, network_id: str) -> str:
-        return f"cache_topology_v7_{org_id}_{network_id}.json"
+        return f"cache_topology_v8_{org_id}_{network_id}.json"
 
     def invalidate_cache(self, org_id: str, network_id: str) -> None:
         path = self.store.base / self._cache_name(org_id, network_id)
@@ -54,7 +48,7 @@ class TopologyService:
 
     def _node_hostname(self, node: TopologyNode) -> str:
         meta = node.metadata or {}
-        return self._first_str(
+        label = human_label(
             node.hostname,
             meta.get("hostname"),
             meta.get("name"),
@@ -62,8 +56,12 @@ class TopologyService:
             meta.get("mdnsName"),
             meta.get("description"),
             node.label,
-            node.id,
         )
+        if label:
+            return label
+        if is_derived_id(node.id):
+            return ""
+        return str(node.id)
 
     def _node_management_ip(self, node: TopologyNode) -> str:
         meta = node.metadata or {}
@@ -470,145 +468,9 @@ class TopologyService:
 
     @staticmethod
     def _dedupe_links(links: list[TopologyLink]) -> list[TopologyLink]:
-        """
-        Dedupe links by normalized endpoint+port tuple.
-        Keeps the first highest-priority link by discovery confidence.
-        """
-        def score(link: TopologyLink) -> int:
-            method = (link.discovery_method or "").lower()
-            if method == "lldp_cdp":
-                return 4
-            if method in {"lldp_cdp_inferred", "physical_attachment"}:
-                return 3
-            if method == "wireless_association":
-                return 2
-            if method == "physical_downstream":
-                return 1
-            return 0
+        """Dedupe links by endpoint+port, merging discovery_sources into one edge."""
+        return merge_duplicate_links(links)
 
-        def key(link: TopologyLink) -> tuple[str, str, str, str, str]:
-            src = link.source
-            tgt = link.target
-            src_port = str(link.source_port.get("portId", "")) if link.source_port else ""
-            tgt_port = str(link.target_port.get("portId", "")) if link.target_port else ""
-            if src <= tgt:
-                return (src, tgt, src_port, tgt_port, link.link_type)
-            return (tgt, src, tgt_port, src_port, link.link_type)
-
-        best_by_key: dict[tuple[str, str, str, str, str], TopologyLink] = {}
-        for link in links:
-            k = key(link)
-            prev = best_by_key.get(k)
-            if prev is None or score(link) > score(prev):
-                best_by_key[k] = link
-        return list(best_by_key.values())
-
-    def _ingest_lldp_cdp_adjacencies(
-        self,
-        node_map: dict[str, TopologyNode],
-        links: list[TopologyLink],
-        linked_pairs: set[tuple[str, str]],
-        linked_ports: set[tuple[str, str, str]],
-        connected_by_port: dict[tuple[str, str], list[dict[str, str]]],
-        lldp_cdp_by_serial: dict[str, dict[str, Any]],
-        ports_by_serial: dict[str, dict[str, Any]],
-        status_by_serial: dict[str, dict[str, Any]],
-        network: dict[str, Any],
-        network_id: str,
-        positions: dict[str, dict[str, float]],
-        all_issues: list[Any],
-    ) -> None:
-        """Create neighbor nodes and wired links from per-device LLDP/CDP before physical attachment."""
-        for serial, node in list(node_map.items()):
-            if not node.managed:
-                continue
-            lldp_ports = self._as_dict(lldp_cdp_by_serial.get(serial, {}).get("ports"))
-            for port_id, port_data in lldp_ports.items():
-                details = self._as_dict(port_data)
-                lldp = self._as_dict(details.get("lldp"))
-                cdp = self._as_dict(details.get("cdp"))
-                neighbor_name = str(
-                    lldp.get("systemName")
-                    or cdp.get("deviceId")
-                    or cdp.get("platform")
-                    or lldp.get("chassisId")
-                    or "unknown"
-                )
-                peer_port = str(lldp.get("portId") or cdp.get("portId") or cdp.get("portIdFormatted") or "unknown")
-                port_key = self._canonical_port_id(str(port_id))
-                peer_id = self._resolve_peer_node_id(neighbor_name, node_map)
-                if not peer_id:
-                    peer_id = f"neighbor-{serial}-{port_id}-{self._slug(neighbor_name)}"
-                    if peer_id not in node_map:
-                        inferred_subtype = self._infer_neighbor_subtype(
-                            {"description": neighbor_name, "name": neighbor_name, "model": cdp.get("platform")},
-                            {"discovered": {"lldp": lldp, "cdp": cdp}},
-                        )
-                        node_map[peer_id] = TopologyNode(
-                            id=peer_id,
-                            type="neighbor",
-                            subtype=inferred_subtype,
-                            label=neighbor_name,
-                            managed=False,
-                            metadata={"name": neighbor_name, "lldp": lldp, "cdp": cdp},
-                            network={"id": network_id, "name": network.get("name", network_id)},
-                            position=positions.get(
-                                peer_id,
-                                {"x": float(len(node_map) * 120), "y": float(len(node_map) * 60)},
-                            ),
-                        )
-                connected_by_port.setdefault((serial, port_key), []).append(
-                    {"peer_id": peer_id, "peer_label": node_map[peer_id].label, "peer_port": peer_port}
-                )
-                peer_port_id = str(lldp.get("portId") or cdp.get("portId") or cdp.get("portIdFormatted") or "")
-                if (serial, port_key, peer_id) in linked_ports:
-                    continue
-                if self._pair_key(serial, peer_id) in linked_pairs and not peer_port_id:
-                    continue
-                src_cfg = self._port_map_get(ports_by_serial.get(serial), str(port_id))
-                src_status = self._port_map_get(status_by_serial.get(serial), str(port_id))
-                dst_cfg = self._port_map_get(ports_by_serial.get(peer_id), peer_port_id) if peer_port_id else None
-                dst_status = self._port_map_get(status_by_serial.get(peer_id), peer_port_id) if peer_port_id else None
-                mismatches, faults, actions = self.validator.compare_ports(
-                    f"lldp-{serial}-{port_id}-{peer_id}",
-                    serial,
-                    str(port_id),
-                    src_cfg,
-                    peer_id,
-                    peer_port_id or "unknown",
-                    dst_cfg,
-                    src_status,
-                    dst_status,
-                )
-                health = "healthy"
-                if any(i.severity == "critical" for i in mismatches + faults):
-                    health = "critical"
-                elif mismatches or faults:
-                    health = "warning"
-                all_issues.extend(mismatches + faults)
-                links.append(
-                    TopologyLink(
-                        id=f"lldp-{serial}-{port_id}-{peer_id}",
-                        source=serial,
-                        target=peer_id,
-                        source_port={"serial": serial, "portId": str(port_id), "config": src_cfg, "status": src_status},
-                        target_port={
-                            "serial": peer_id,
-                            "portId": peer_port_id or "unknown",
-                            "config": dst_cfg,
-                            "status": dst_status,
-                        },
-                        link_type="wired",
-                        discovery_method="lldp_cdp_inferred",
-                        health=health,
-                        mismatches=mismatches,
-                        faults=faults,
-                        remediable_actions=actions,
-                        last_seen=datetime.now(timezone.utc),
-                    )
-                )
-                linked_pairs.add(self._pair_key(serial, peer_id))
-                linked_ports.add((serial, port_key, peer_id))
 
     async def build(self, org_id: str, network_id: str) -> TopologyGraph:
         cached = self._load_cache(org_id, network_id)
@@ -620,7 +482,9 @@ class TopologyService:
             topology = await self.meraki.get_network_topology(network_id)
         except MerakiAPIError as exc:
             logger.warning("Topology endpoint failed for network %s: %s", network_id, exc)
-            topology = {"links": []}
+            topology = {"nodes": [], "links": []}
+        if "nodes" not in topology:
+            topology["nodes"] = []
         client_timespan = settings.meraki_client_lookback_seconds
         try:
             clients = await self.meraki.get_network_clients(network_id, timespan=client_timespan)
@@ -633,376 +497,55 @@ class TopologyService:
             logger.warning("Switch stacks endpoint failed for network %s: %s", network_id, exc)
             stacks = []
         network = next((n for n in networks if n["id"] == network_id), {"id": network_id, "name": network_id})
-
         positions = self.layouts.get_positions(org_id, network_id)
 
-        node_map: dict[str, TopologyNode] = {}
         ports_by_serial: dict[str, dict[str, Any]] = {}
         status_by_serial: dict[str, dict[str, Any]] = {}
         lldp_cdp_by_serial: dict[str, dict[str, Any]] = {}
-        connected_by_port: dict[tuple[str, str], list[dict[str, str]]] = {}
-
         for d in devices:
+            serial = str(d.get("serial") or "")
             subtype = self._friendly_subtype(str(d.get("productType", "unknown")))
-            node_map[d["serial"]] = TopologyNode(
-                id=d["serial"],
-                type="meraki",
-                subtype=subtype,
-                label=d.get("name") or d["serial"],
-                managed=True,
-                metadata=d,
-                network={"id": network_id, "name": network.get("name", network_id)},
-                position=positions.get(d["serial"], {"x": float(len(node_map) * 160), "y": float(len(node_map) * 80)}),
-            )
-            if subtype == "switch":
+            if subtype == "switch" and serial:
                 try:
-                    raw_ports = await self.meraki.get_switch_ports(d["serial"])
+                    raw_ports = await self.meraki.get_switch_ports(serial)
                 except MerakiAPIError as exc:
-                    logger.warning("Switch ports endpoint failed for %s: %s", d["serial"], exc)
+                    logger.warning("Switch ports endpoint failed for %s: %s", serial, exc)
                     raw_ports = []
                 try:
-                    raw_statuses = await self.meraki.get_switch_port_statuses(d["serial"])
+                    raw_statuses = await self.meraki.get_switch_port_statuses(serial)
                 except MerakiAPIError as exc:
-                    logger.warning("Switch port status endpoint failed for %s: %s", d["serial"], exc)
+                    logger.warning("Switch port status endpoint failed for %s: %s", serial, exc)
                     raw_statuses = []
-                ports_by_serial[d["serial"]] = {str(p["portId"]): p for p in raw_ports}
-                status_by_serial[d["serial"]] = {str(s["portId"]): s for s in raw_statuses}
-            try:
-                lldp_cdp_by_serial[d["serial"]] = self._as_dict(await self.meraki.get_device_lldp_cdp(d["serial"]))
-            except MerakiAPIError:
-                lldp_cdp_by_serial[d["serial"]] = {}
+                ports_by_serial[serial] = {str(p["portId"]): p for p in raw_ports}
+                status_by_serial[serial] = {str(s["portId"]): s for s in raw_statuses}
+            if serial:
+                try:
+                    lldp_cdp_by_serial[serial] = self._as_dict(await self.meraki.get_device_lldp_cdp(serial))
+                except MerakiAPIError:
+                    lldp_cdp_by_serial[serial] = {}
 
-        links: list[TopologyLink] = []
-        all_issues = []
-        linked_pairs: set[tuple[str, str]] = set()
-        linked_ports: set[tuple[str, str, str]] = set()
-
-        for item in topology.get("links", []):
-            ends = item.get("ends", [])
-            if len(ends) != 2:
-                continue
-            a = ends[0]
-            b = ends[1]
-
-            a_node_data = self._as_dict(a.get("node"))
-            b_node_data = self._as_dict(b.get("node"))
-            # Prefer the device serial (merges with existing managed node) over derivedId.
-            a_node = self._as_dict(a_node_data.get("device")).get("serial") or a_node_data.get("derivedId")
-            b_node = self._as_dict(b_node_data.get("device")).get("serial") or b_node_data.get("derivedId")
-            if not a_node or not b_node:
-                continue
-
-            for node_id, end in ((a_node, a), (b_node, b)):
-                end_node = self._as_dict(end.get("node"))
-                if node_id not in node_map:
-                    inferred_subtype = self._infer_neighbor_subtype(end_node, end)
-                    resolved_label = self._resolve_neighbor_label(end_node, end) or node_id
-                    node_map[node_id] = TopologyNode(
-                        id=node_id,
-                        type="neighbor",
-                        subtype=inferred_subtype,
-                        label=resolved_label,
-                        managed=False,
-                        metadata=end_node,
-                        network={"id": network_id, "name": network.get("name", network_id)},
-                        position=positions.get(node_id, {"x": float(len(node_map) * 120), "y": float(len(node_map) * 60)}),
-                    )
-
-            a_serial = self._as_dict(a_node_data.get("device")).get("serial", a_node)
-            b_serial = self._as_dict(b_node_data.get("device")).get("serial", b_node)
-            a_port_id = self._extract_port_id(a)
-            b_port_id = self._extract_port_id(b)
-            a_port_key = self._canonical_port_id(a_port_id) if a_port_id else ""
-            b_port_key = self._canonical_port_id(b_port_id) if b_port_id else ""
-
-            a_cfg = self._port_map_get(ports_by_serial.get(a_serial), a_port_id)
-            b_cfg = self._port_map_get(ports_by_serial.get(b_serial), b_port_id)
-            a_status = self._port_map_get(status_by_serial.get(a_serial), a_port_id)
-            b_status = self._port_map_get(status_by_serial.get(b_serial), b_port_id)
-
-            if a_serial and a_port_key:
-                connected_by_port.setdefault((a_serial, a_port_key), []).append(
-                    {
-                        "peer_id": b_node,
-                        "peer_label": node_map[b_node].label if b_node in node_map else b_node,
-                        "peer_port": b_port_id or "unknown",
-                    }
-                )
-            if b_serial and b_port_key:
-                connected_by_port.setdefault((b_serial, b_port_key), []).append(
-                    {
-                        "peer_id": a_node,
-                        "peer_label": node_map[a_node].label if a_node in node_map else a_node,
-                        "peer_port": a_port_id or "unknown",
-                    }
-                )
-
-            mismatches, faults, actions = self.validator.compare_ports(
-                item.get("id", f"{a_node}-{b_node}"),
-                a_serial,
-                a_port_id,
-                a_cfg,
-                b_serial,
-                b_port_id,
-                b_cfg,
-                a_status,
-                b_status,
-            )
-            health = "healthy"
-            if any(i.severity == "critical" for i in mismatches + faults):
-                health = "critical"
-            elif mismatches or faults:
-                health = "warning"
-            all_issues.extend(mismatches + faults)
-            links.append(
-                TopologyLink(
-                    id=item.get("id", f"{a_node}-{b_node}"),
-                    source=a_node,
-                    target=b_node,
-                    source_port={"serial": a_serial, "portId": a_port_id, "config": a_cfg, "status": a_status},
-                    target_port={"serial": b_serial, "portId": b_port_id, "config": b_cfg, "status": b_status},
-                    link_type="wired",
-                    discovery_method="lldp_cdp",
-                    health=health,
-                    mismatches=mismatches,
-                    faults=faults,
-                    remediable_actions=actions,
-                    last_seen=datetime.now(timezone.utc),
-                )
-            )
-            linked_pairs.add(self._pair_key(a_node, b_node))
-            if a_port_id:
-                linked_ports.add((a_node, a_port_key, b_node))
-            if b_port_id:
-                linked_ports.add((b_node, b_port_key, a_node))
-
-        meraki_index = index_managed_devices(node_map)
-        for client in clients:
-            if not (client.get("recentDeviceSerial") and client.get("ssid")):
-                continue
-            if resolve_managed_device(client, meraki_index):
-                continue
-            ap_serial = str(client.get("recentDeviceSerial") or "")
-            if not ap_serial or ap_serial not in node_map:
-                continue
-            client_id = f"client-{client['id']}"
-            node_map[client_id] = TopologyNode(
-                id=client_id,
-                type="client",
-                subtype="wireless",
-                label=client.get("description") or client.get("ip") or client_id,
-                managed=False,
-                metadata=client,
-                network={"id": network_id, "name": network.get("name", network_id)},
-                position=positions.get(client_id, {"x": float(len(node_map) * 40), "y": float(len(node_map) * 20)}),
-            )
-            links.append(
-                TopologyLink(
-                    id=f"wireless-{client_id}-{ap_serial}",
-                    source=ap_serial,
-                    target=client_id,
-                    link_type="wireless",
-                    discovery_method="wireless_association",
-                )
-            )
-
-        self._ingest_lldp_cdp_adjacencies(
-            node_map,
-            links,
-            linked_pairs,
-            linked_ports,
-            connected_by_port,
-            lldp_cdp_by_serial,
-            ports_by_serial,
-            status_by_serial,
-            network,
-            network_id,
-            positions,
-            all_issues,
-        )
-
-        switch_serials = {
-            d["serial"] for d in devices if self._friendly_subtype(str(d.get("productType", "unknown"))) == "switch"
-        }
-        grouped_wired = group_wired_clients_by_switch_port(clients, switch_serials)
-        clients_by_sp = {
-            f"{serial}:{port}": [dict(c) for c in group] for (serial, port), group in grouped_wired.items()
-        }
-        node_map, links, port_peer_hints, sw_port_debug = apply_physical_port_attachments(
-            nodes=node_map,
-            links=links,
-            wired_grouped=grouped_wired,
+        assembled = assemble_topology(
+            network_id=network_id,
+            network=network,
+            devices=devices,
+            topology=topology,
+            clients=clients,
             ports_by_serial=ports_by_serial,
             status_by_serial=status_by_serial,
-            network={"id": network_id, "name": network.get("name", network_id)},
+            lldp_cdp_by_serial=lldp_cdp_by_serial,
             positions=positions,
+            entity_merges=self.entity_merges.list_merges(org_id, network_id),
+            compare_ports=self.validator.compare_ports if self.validator else None,
             port_map_get=self._port_map_get,
         )
-        node_map, links = apply_entity_merges(
-            node_map,
-            links,
-            self.entity_merges.list_merges(org_id, network_id),
-        )
-        node_map, links = prune_orphan_nodes(node_map, links)
+        node_map: dict[str, TopologyNode] = assembled["nodes"]
+        links: list[TopologyLink] = assembled["links"]
+        all_issues = assembled["issues"]
+        port_peer_hints = assembled["port_peer_hints"]
+        sw_port_debug = assembled["sw_port_debug"]
+        switch_serials = assembled["switch_serials"]
+        clients_by_sp = assembled["clients_by_switch_port"]
 
-        for serial, node in list(node_map.items()):
-            if not node.managed:
-                continue
-
-            interfaces: list[dict[str, Any]] = []
-            for (device_serial, local_port), peers in connected_by_port.items():
-                if device_serial != serial:
-                    continue
-                cfg = self._port_map_get(ports_by_serial.get(serial), str(local_port)) or {}
-                sta = self._port_map_get(status_by_serial.get(serial), str(local_port)) or {}
-                interfaces.append({
-                    "portId": local_port,
-                    "connectedPeers": peers,
-                    "config": cfg,
-                    "status": sta,
-                })
-
-            lldp_ports = self._as_dict(lldp_cdp_by_serial.get(serial, {}).get("ports"))
-            for port_id, port_data in lldp_ports.items():
-                details = self._as_dict(port_data)
-                lldp = self._as_dict(details.get("lldp"))
-                cdp = self._as_dict(details.get("cdp"))
-                neighbor_name = str(
-                    lldp.get("systemName")
-                    or cdp.get("deviceId")
-                    or cdp.get("platform")
-                    or lldp.get("chassisId")
-                    or "unknown"
-                )
-                peer_port = str(lldp.get("portId") or cdp.get("portId") or cdp.get("portIdFormatted") or "unknown")
-                discovered_peer = {"peer_id": neighbor_name, "peer_label": neighbor_name, "peer_port": peer_port}
-
-                port_key = self._canonical_port_id(str(port_id))
-                existing = next(
-                    (entry for entry in interfaces if self._canonical_port_id(str(entry.get("portId", ""))) == port_key),
-                    None,
-                )
-                if existing:
-                    # Only append if this peer isn't already listed (avoid duplicates)
-                    existing_ids = {p.get("peer_id") for p in existing.get("connectedPeers", [])}
-                    if neighbor_name not in existing_ids:
-                        existing.setdefault("connectedPeers", []).append(discovered_peer)
-                else:
-                    cfg = self._port_map_get(ports_by_serial.get(serial), str(port_id)) or {}
-                    sta = self._port_map_get(status_by_serial.get(serial), str(port_id)) or {}
-                    interfaces.append({
-                        "portId": port_key,
-                        "connectedPeers": [discovered_peer],
-                        "config": cfg,
-                        "status": sta,
-                    })
-
-                # Build missing wired links directly from LLDP/CDP interface data.
-                peer_id = self._resolve_peer_node_id(neighbor_name, node_map)
-                if not peer_id:
-                    peer_id = f"neighbor-{serial}-{port_id}-{self._slug(neighbor_name)}"
-                    if peer_id not in node_map:
-                        inferred_subtype = self._infer_neighbor_subtype(
-                            {"description": neighbor_name, "name": neighbor_name, "model": cdp.get("platform")},
-                            {"discovered": {"lldp": lldp, "cdp": cdp}},
-                        )
-                        node_map[peer_id] = TopologyNode(
-                            id=peer_id,
-                            type="neighbor",
-                            subtype=inferred_subtype,
-                            label=neighbor_name,
-                            managed=False,
-                            metadata={"name": neighbor_name, "lldp": lldp, "cdp": cdp},
-                            network={"id": network_id, "name": network.get("name", network_id)},
-                            position=positions.get(
-                                peer_id,
-                                {"x": float(len(node_map) * 120), "y": float(len(node_map) * 60)},
-                            ),
-                        )
-
-                peer_port_id = str(lldp.get("portId") or cdp.get("portId") or cdp.get("portIdFormatted") or "")
-                pkey = self._canonical_port_id(str(port_id))
-                if (serial, pkey, peer_id) in linked_ports:
-                    continue
-                if self._pair_key(serial, peer_id) in linked_pairs and not peer_port_id:
-                    continue
-
-                src_cfg = self._port_map_get(ports_by_serial.get(serial), str(port_id))
-                src_status = self._port_map_get(status_by_serial.get(serial), str(port_id))
-                dst_cfg = self._port_map_get(ports_by_serial.get(peer_id), peer_port_id) if peer_port_id else None
-                dst_status = self._port_map_get(status_by_serial.get(peer_id), peer_port_id) if peer_port_id else None
-                mismatches, faults, actions = self.validator.compare_ports(
-                    f"lldp-{serial}-{port_id}-{peer_id}",
-                    serial,
-                    str(port_id),
-                    src_cfg,
-                    peer_id,
-                    peer_port_id or "unknown",
-                    dst_cfg,
-                    src_status,
-                    dst_status,
-                )
-                health = "healthy"
-                if any(i.severity == "critical" for i in mismatches + faults):
-                    health = "critical"
-                elif mismatches or faults:
-                    health = "warning"
-                all_issues.extend(mismatches + faults)
-                links.append(
-                    TopologyLink(
-                        id=f"lldp-{serial}-{port_id}-{peer_id}",
-                        source=serial,
-                        target=peer_id,
-                        source_port={"serial": serial, "portId": str(port_id), "config": src_cfg, "status": src_status},
-                        target_port={"serial": peer_id, "portId": peer_port_id or "unknown", "config": dst_cfg, "status": dst_status},
-                        link_type="wired",
-                        discovery_method="lldp_cdp_inferred",
-                        health=health,
-                        mismatches=mismatches,
-                        faults=faults,
-                        remediable_actions=actions,
-                        last_seen=datetime.now(timezone.utc),
-                    )
-                )
-                linked_pairs.add(self._pair_key(serial, peer_id))
-                linked_ports.add((serial, pkey, peer_id))
-
-            for h in port_peer_hints:
-                if h.get("serial") != serial:
-                    continue
-                pkey = self._canonical_port_id(str(h.get("port", "")))
-                if not pkey:
-                    continue
-                peer = {
-                    "peer_id": h["peer_id"],
-                    "peer_label": h.get("peer_label", h.get("peer_id", "")),
-                    "peer_type": h.get("kind", "synthetic"),
-                }
-                found = next(
-                    (e for e in interfaces if self._canonical_port_id(str(e.get("portId", ""))) == pkey),
-                    None,
-                )
-                if found:
-                    existing_ids2 = {str(x.get("peer_id", "")) for x in (found.get("connectedPeers") or [])}
-                    if str(peer.get("peer_id", "")) not in existing_ids2:
-                        found.setdefault("connectedPeers", []).append(peer)
-                else:
-                    cfg = self._port_map_get(ports_by_serial.get(serial), pkey) or {}
-                    sta = self._port_map_get(status_by_serial.get(serial), pkey) or {}
-                    interfaces.append({
-                        "portId": pkey,
-                        "config": dict(cfg) if isinstance(cfg, dict) else {},
-                        "status": dict(sta) if isinstance(sta, dict) else {},
-                        "connectedPeers": [peer],
-                    })
-
-            def _port_sort_key(i: dict[str, Any]) -> tuple[int, str]:
-                pid = str(i.get("portId", "0"))
-                return (int(pid) if pid.isdigit() else 9999, pid)
-
-            node.metadata["connected_interfaces"] = sorted(interfaces, key=_port_sort_key)
-
-        links = self._dedupe_links(links)
         self._enrich_graph(list(node_map.values()), links, network, stacks)
         switch_ports_cat: dict[str, list[dict[str, Any]]] = {
             s: build_switch_port_catalog(s, ports_by_serial, status_by_serial) for s in switch_serials
@@ -1014,17 +557,18 @@ class TopologyService:
             "switch_serials": sorted(switch_serials),
             "port_peer_hint_count": len(port_peer_hints),
             "clients_by_switch_port_counts": {key: len(val) for key, val in clients_by_sp.items()},
+            "unresolved_nodes": assembled["unresolved"],
         }
         summary = TopologySummary(
             total_nodes=len(node_map),
             total_wired_links=len([l for l in links if l.link_type == "wired"]),
             total_wireless_links=len([l for l in links if l.link_type == "wireless"]),
-            total_mismatches=len([i for i in all_issues if i.category == "config_mismatch"]),
-            total_critical_issues=len([i for i in all_issues if i.severity == "critical"]),
-            total_warning_issues=len([i for i in all_issues if i.severity == "warning"]),
+            total_mismatches=len([i for i in all_issues if getattr(i, "category", "") == "config_mismatch"]),
+            total_critical_issues=len([i for i in all_issues if getattr(i, "severity", "") == "critical"]),
+            total_warning_issues=len([i for i in all_issues if getattr(i, "severity", "") == "warning"]),
             unmanaged_neighbors=len([n for n in node_map.values() if not n.managed]),
-            remediable_issues=len([i for i in all_issues if i.remediable]),
-            manual_investigation_issues=len([i for i in all_issues if not i.remediable]),
+            remediable_issues=len([i for i in all_issues if getattr(i, "remediable", False)]),
+            manual_investigation_issues=len([i for i in all_issues if not getattr(i, "remediable", True)]),
         )
         graph = TopologyGraph(
             organization={"id": org_id},

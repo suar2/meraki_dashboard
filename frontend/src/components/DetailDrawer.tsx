@@ -64,6 +64,7 @@ function portSummary(port: Record<string, unknown>) {
     link: String(status.status || "—"),
     poe: String(poe.status ?? config.poeEnabled ?? "—"),
     role: String(port.role || ""),
+    clientCount: status.clientCount ?? port.clientCount ?? "",
   };
 }
 
@@ -313,12 +314,40 @@ export function DetailDrawer({
         </div>
         <div className="d-grid">
           <Cell k="Discovery" v={link!.discovery_method} />
+          <Cell
+            k="Discovery sources"
+            v={(link!.discovery_sources || []).join(", ")}
+            hideEmpty
+          />
           <Cell k="Role" v={link!.interface_role} hideEmpty />
+          <Cell k="Source device" v={src.serial} />
+          <Cell k="Source port" v={src.portId} />
+          <Cell k="Target device" v={tgt.serial} />
+          <Cell k="Target port" v={tgt.portId} />
+          <Cell k="Client count (through port)" v={src.clientCount} hideEmpty />
           <Cell k="Source IP" v={link!.source_management_ip} hideEmpty />
           <Cell k="Target IP" v={link!.target_management_ip} hideEmpty />
           <Cell k="Source platform" v={link!.source_platform} hideEmpty />
           <Cell k="Target platform" v={link!.target_platform} hideEmpty />
         </div>
+        {Object.keys(link!.identity_resolution || {}).length > 0 && (
+          <>
+            <div className="d-sub">
+              <span className="bar" />
+              <span className="t">Identity resolution</span>
+            </div>
+            <div className="d-grid">
+              {Object.entries(link!.identity_resolution || {}).map(([key, value]) => (
+                <Cell
+                  key={key}
+                  k={key}
+                  v={typeof value === "object" ? JSON.stringify(value) : value}
+                  hideEmpty
+                />
+              ))}
+            </div>
+          </>
+        )}
         <div className="d-sub">
           <span className="bar" />
           <span className="t">Source port</span>

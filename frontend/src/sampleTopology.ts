@@ -53,6 +53,8 @@ function link(partial: Partial<TopologyLink> & Pick<TopologyLink, "id" | "source
     source_device_class: "",
     target_device_class: "",
     interface_role: "",
+    discovery_sources: partial.discovery_sources || [partial.discovery_method || "lldp_cdp"],
+    identity_resolution: partial.identity_resolution || {},
     ...partial,
   };
 }
@@ -83,6 +85,7 @@ function catalogPort(portId: string, extra?: { type?: string; status?: string; s
 const MS = "Q2XX-MS-0001";
 const MX = "Q2XX-MX-0001";
 const AP = "Q2XX-AP-0001";
+const CAMERA = "Q2XX-MV-0001";
 const SERVER = "SERVER-01";
 
 export const SAMPLE_GRAPH: TopologyGraph = {
@@ -128,6 +131,19 @@ export const SAMPLE_GRAPH: TopologyGraph = {
       serial: AP,
       device_class: "ap",
       metadata: { model: "MR36", productType: "wireless", lanIp: "10.1.2.10", firmware: "31.1.5", status: "online", mac: "00:18:0a:00:00:10" },
+    }),
+    node({
+      id: CAMERA,
+      type: "meraki",
+      subtype: "camera",
+      label: "Main - camera",
+      hostname: "Main - camera",
+      platform: "MV12",
+      management_ip: "10.1.2.12",
+      software_version: "5.7.1",
+      serial: CAMERA,
+      device_class: "mv",
+      metadata: { model: "MV12", productType: "camera", lanIp: "10.1.2.12", firmware: "5.7.1", status: "online", mac: "00:18:0a:00:00:12" },
     }),
     node({
       id: SERVER,
@@ -330,6 +346,20 @@ export const SAMPLE_GRAPH: TopologyGraph = {
       faults: [poeWarn],
       source_port: { serial: MS, portId: "2", config: { type: "trunk", poeEnabled: true }, status: { status: "Connected", speed: "1 Gbps", poe: { status: "delivering" } } },
       target_port: { serial: AP, portId: "wired" },
+      discovery_sources: ["topology_link_layer", "device_lldp_cdp", "switch_port_status"],
+      identity_resolution: { method: "lldp_deviceMac", deviceMac: "00:18:0a:00:00:10", sourcePort: "2" },
+    }),
+    link({
+      id: "sw-camera",
+      source: MS,
+      target: CAMERA,
+      source_interface: "8",
+      target_interface: "eth0",
+      discovery_method: "topology_link_layer",
+      discovery_sources: ["topology_link_layer", "device_lldp_cdp", "switch_port_status"],
+      identity_resolution: { method: "lldp_deviceMac", deviceMac: "00:18:0a:00:00:12", sourcePort: "8" },
+      source_port: { serial: MS, portId: "8", config: { type: "access", poeEnabled: true }, status: { status: "Connected", speed: "1 Gbps", clientCount: 1 } },
+      target_port: { serial: CAMERA, portId: "eth0" },
     }),
     link({
       id: "sw-server-mgmt",
@@ -391,8 +421,8 @@ export const SAMPLE_GRAPH: TopologyGraph = {
   ],
   issues: [poeWarn],
   summary: {
-    total_nodes: 16,
-    total_wired_links: 11,
+    total_nodes: 17,
+    total_wired_links: 12,
     total_wireless_links: 4,
     total_mismatches: 0,
     total_critical_issues: 0,
@@ -410,7 +440,7 @@ export const SAMPLE_GRAPH: TopologyGraph = {
       catalogPort("5", { type: "access", status: "Connected", name: "Pi4" }),
       catalogPort("6"),
       catalogPort("7", { type: "access", status: "Connected", name: "NAS" }),
-      catalogPort("8"),
+      catalogPort("8", { type: "access", status: "Connected", poe: true, name: "Main - camera" }),
       catalogPort("9"),
       catalogPort("10", { type: "access", status: "Connected", name: "RPi5" }),
       catalogPort("11"),

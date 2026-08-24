@@ -49,6 +49,8 @@ class TopologyServiceUnitTests(unittest.TestCase):
         links = TopologyService._dedupe_links([inferred, direct])
         self.assertEqual(len(links), 1)
         self.assertEqual(links[0].id, "lldp-direct")
+        self.assertIn("lldp_cdp", links[0].discovery_sources)
+        self.assertIn("lldp_cdp_inferred", links[0].discovery_sources)
 
     def test_port_map_get_matches_port3_and_numeric_key(self):
         m = {"3": {"portId": "3", "name": "test"}}

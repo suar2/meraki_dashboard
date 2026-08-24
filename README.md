@@ -9,7 +9,7 @@ The topology canvas follows the Packet Express Neighbor Explorer experience (Cyt
 - Frontend: React + TypeScript + Vite + Cytoscape + cytoscape-fcose
 - Backend: FastAPI + httpx
 - Persistence: JSON-backed storage for layout and audit logs (`backend/data/`)
-- Topology source of truth: Meraki LLDP/CDP link-layer topology endpoint
+- Topology source of truth: `GET /networks/{id}/topology/linkLayer` nodes first, then links, validated with per-device LLDP/CDP and switch port status. Clients enrich the graph; they do not invent duplicate managed devices.
 
 ## Prerequisites
 
