@@ -29,12 +29,13 @@ class DeviceClassTests(unittest.TestCase):
             "access",
         )
 
-    def test_client_and_unmanaged(self):
+    def test_client_unmanaged_and_server(self):
         self.assertEqual(classify_device(hostname="laptop", node_type="client", subtype="wireless", managed=False), "client")
         self.assertEqual(
             classify_device(hostname="Unknown CDP peer", node_type="neighbor", subtype="unmanaged", managed=False),
             "unmanaged",
         )
+        self.assertEqual(classify_device(hostname="lab-server", node_type="neighbor", subtype="server", managed=False), "server")
 
     def test_core_election_prefers_c9500_then_degree(self):
         nodes = [

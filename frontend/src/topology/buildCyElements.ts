@@ -3,6 +3,16 @@ import type { TopologyGraph, TopologyLink, TopologyNode } from "../types/topolog
 import { asDeviceClass, classVisuals, classifyNode } from "./deviceClass";
 import { shortIface } from "./shortIface";
 
+function edgeIface(link: TopologyLink, side: "source" | "target"): string {
+  const port = side === "source" ? link.source_port || {} : link.target_port || {};
+  const raw = side === "source" ? link.source_interface : link.target_interface;
+  const portId = shortIface(String(raw || port.portId || ""));
+  const role = String(link.interface_role || port.role || "").trim();
+  if (role && portId) return `${portId} ${role}`;
+  if (role) return role;
+  return portId;
+}
+
 function electCoreIds(nodes: TopologyNode[]): Set<string> {
   const switches = nodes.filter((n) => {
     const sub = (n.subtype || "").toLowerCase();
@@ -64,8 +74,8 @@ export function buildCyElements(graph: TopologyGraph): ElementDefinition[] {
         id: link.id,
         source: link.source,
         target: link.target,
-        sourceIf: shortIface(link.source_interface || String((link.source_port || {}).portId || "")),
-        targetIf: shortIface(link.target_interface || String((link.target_port || {}).portId || "")),
+        sourceIf: edgeIface(link, "source"),
+        targetIf: edgeIface(link, "target"),
         kind: backbone ? "backbone" : "edge",
         linkType: link.link_type,
         health: link.health,

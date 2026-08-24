@@ -1,5 +1,5 @@
 import React from "react";
-import { executeRemediation, fetchTopology } from "./api/client";
+import { executeRemediation, fetchTopology, saveEntityMerge } from "./api/client";
 import { CytoscapeStage, type StageHandle } from "./components/CytoscapeStage";
 import { RemediationModal } from "./components/RemediationModal";
 import { Sidebar } from "./components/Sidebar";
@@ -7,6 +7,8 @@ import { TopBar } from "./components/TopBar";
 import { TopologyDebugPanel } from "./components/TopologyDebugPanel";
 import { clearMerakiRequestCaches, getNetworksForOrg, getOrganizationsForApiKey } from "./merakiSession";
 import { SAMPLE_GRAPH } from "./sampleTopology";
+import type { MergeRequest } from "./components/DetailDrawer";
+import { applyLocalEntityMerge, switchPortOfNode } from "./topology/entityMerge";
 import { DEVICE_CLASS_ORDER, DEVICE_CLASSES, asDeviceClass, classVisuals } from "./topology/deviceClass";
 import { applyTheme, loadPrefs, savePrefs, type UiPrefs } from "./topology/prefs";
 import type { RemediationAction, TopologyGraph } from "./types/topology";
@@ -155,6 +157,40 @@ export function App() {
     await loadTopology();
   };
 
+  const mergeEntities = async (request: MergeRequest) => {
+    if (!graph) return;
+    const survivorPort = switchPortOfNode(graph, request.survivorId);
+    const memberPort = switchPortOfNode(graph, request.memberId);
+    const payload = {
+      org_id: orgId || String(graph.organization.id),
+      network_id: networkId || String(graph.network.id),
+      survivor_id: request.survivorId,
+      member_ids: [request.memberId],
+      label: request.label,
+      device_class: "server",
+      interfaces: [
+        {
+          switch_serial: survivorPort?.serial || "",
+          port_id: survivorPort?.portId || "",
+          role: request.survivorRole,
+          member_id: request.survivorId,
+        },
+        {
+          switch_serial: memberPort?.serial || "",
+          port_id: memberPort?.portId || "",
+          role: request.memberRole,
+          member_id: request.memberId,
+        },
+      ],
+    };
+    if (graph.organization.id === "O_DEMO") {
+      setGraph(applyLocalEntityMerge(graph, payload));
+      return;
+    }
+    await saveEntityMerge(payload);
+    await loadTopology();
+  };
+
   const hits = React.useMemo(() => {
     const q = search.trim().toLowerCase();
     if (!q) return [];
@@ -262,11 +298,12 @@ export function App() {
           onVisibleCount={setVisibleCount}
           onSearchIndex={setSearchIndex}
           onRemediation={setPendingAction}
+          onMerge={(req) => void mergeEntities(req)}
           emptyTitle={loading ? "Loading topology…" : "Explore your network"}
           emptySub={
             loading
               ? "Fetching devices, LLDP/CDP links, ports and clients from Meraki."
-              : "Connect a Meraki API key and choose an organization + network, or load the sample topology to preview the Packet Express experience."
+              : "Connect a Meraki API key and choose an organization + network, or load the sample topology to preview the physical Packet Express map."
           }
         />
       </div>

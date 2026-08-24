@@ -20,3 +20,13 @@ export const loadLayout = async (orgId: string, networkId: string): Promise<Reco
 export const executeRemediation = async (org_id: string, network_id: string, action: RemediationAction, actor: string) =>
   api.post("/remediation/execute", { org_id, network_id, action, actor });
 export const listAudit = async () => (await api.get("/audit")).data;
+
+export const saveEntityMerge = async (payload: {
+  org_id: string;
+  network_id: string;
+  survivor_id: string;
+  member_ids: string[];
+  label: string;
+  device_class: string;
+  interfaces: Array<{ switch_serial: string; port_id: string; role: string; member_id: string }>;
+}) => (await api.post("/entities/merge", payload)).data;

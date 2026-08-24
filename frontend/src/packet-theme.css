@@ -281,6 +281,7 @@
                 --color-mg: var(--wa-color-cyan-50); /* cyan   → MG cellular */
                 --color-client: var(--wa-color-blue-70); /* light  → clients */
                 --color-unmanaged: var(--wa-color-gray-40); /* gray  → LLDP/CDP peers */
+                --color-server: var(--wa-color-yellow-50); /* amber → servers / NAS */
             }
             * {
                 box-sizing: border-box;

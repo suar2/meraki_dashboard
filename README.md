@@ -60,6 +60,9 @@ Backend endpoints (all under `/api` as implemented in `backend/app/api/routes.py
 - `GET /api/organizations`
 - `GET /api/organizations/{org_id}/networks`
 - `GET /api/topology/{org_id}/{network_id}`
+- `GET /api/entities/merges/{org_id}/{network_id}`
+- `POST /api/entities/merge` — persist a multi-NIC chassis merge
+- `DELETE /api/entities/merge/{org_id}/{network_id}/{merge_id}`
 - `POST /api/layout` — body: `{ "org_id", "network_id", "positions" }`
 - `GET /api/layout/{org_id}/{network_id}`
 - `POST /api/meraki-api-key` — body: `{ "api_key" }` (sets key for this backend process; frontend uses this in dev)
@@ -149,7 +152,10 @@ On import, Pydantic loads `.env` from the process working directory and validate
 - Loads org + network + devices from Meraki APIs.
 - Pulls LLDP/CDP-derived link layer topology and creates wired links.
 - Adds non-Meraki discovered peers as unmanaged nodes.
-- Pulls wireless client associations and renders them as wireless links (separate from LLDP/CDP wired topology).
+- Pulls wireless client associations and hangs them under the AP (`recentDeviceSerial`), not under the switch uplink.
+- Builds **physical topology** (what chassis is on each switch port, and what sits behind it) using this authority order: managed Meraki identity → LLDP/CDP → switch client table → downstream inference. Unidentified multi-MAC ports become a single `Unknown downstream device – Port N` still linked to that port. Orphan nodes are never rendered.
+- Switch **port diagrams** (all physical interfaces, including unused) stay on the node/link detail panel. Topology only draws meaningful connections. Clicking a topology link highlights the matching jack.
+- Multi-NIC chassis (for example server management + fabric) can be merged with **Merge as same physical device**. The association is persisted per org/network and reapplied on the next topology build.
 - Pulls switch port configuration + switch port status for both sides when managed, then validates link parity.
 
 ## Validation/rule engine

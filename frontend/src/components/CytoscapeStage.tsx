@@ -2,7 +2,7 @@ import React from "react";
 import cytoscape, { type Core, type EventObject } from "cytoscape";
 import fcose from "cytoscape-fcose";
 import { Icon } from "./Icon";
-import { DetailDrawer } from "./DetailDrawer";
+import { DetailDrawer, type MergeRequest } from "./DetailDrawer";
 import { buildCyElements, linkPassesOpsFilters, nodePassesOpsFilters } from "../topology/buildCyElements";
 import { applyCyTheme, classColor, classTier } from "../topology/cyStyle";
 import { asDeviceClass, DEVICE_CLASSES } from "../topology/deviceClass";
@@ -43,9 +43,9 @@ const LAYOUTS: Record<LayoutMode, Record<string, unknown>> = {
     animationDuration: 650,
     fit: true,
     padding: 60,
-    directed: false,
-    spacingFactor: 1.1,
-    grid: true,
+    directed: true,
+    spacingFactor: 1.15,
+    grid: false,
     circle: false,
     maximal: false,
     avoidOverlap: true,
@@ -70,12 +70,13 @@ interface Props {
   onVisibleCount: (n: number) => void;
   onSearchIndex: (hits: { id: string; label: string; ip: string; type: string; color: string }[]) => void;
   onRemediation: (action: RemediationAction) => void;
+  onMerge?: (request: MergeRequest) => void;
   emptyTitle: string;
   emptySub: string;
 }
 
 export const CytoscapeStage = React.forwardRef<StageHandle, Props>(function CytoscapeStage(
-  { graph, orgId, networkId, prefs, setPrefs, onVisibleCount, onSearchIndex, onRemediation, emptyTitle, emptySub },
+  { graph, orgId, networkId, prefs, setPrefs, onVisibleCount, onSearchIndex, onRemediation, onMerge, emptyTitle, emptySub },
   ref
 ) {
   const containerRef = React.useRef<HTMLDivElement | null>(null);
@@ -94,6 +95,18 @@ export const CytoscapeStage = React.forwardRef<StageHandle, Props>(function Cyto
   const linkByIdRef = React.useRef(linkById);
   nodeByIdRef.current = nodeById;
   linkByIdRef.current = linkById;
+
+  const portPanel = React.useMemo(
+    () => resolvePortPanel(graph, selectedNode, selectedLink),
+    [graph, selectedNode, selectedLink]
+  );
+  const mergeCandidates = React.useMemo(() => {
+    if (!graph || !selectedNode) return [];
+    if (selectedNode.managed || selectedNode.subtype === "wireless") return [];
+    return graph.nodes.filter(
+      (n) => n.id !== selectedNode.id && !n.managed && n.subtype !== "wireless" && n.type !== "meraki"
+    );
+  }, [graph, selectedNode]);
 
   const persistPositions = React.useCallback(
     (cy: Core) => {
@@ -114,7 +127,10 @@ export const CytoscapeStage = React.forwardRef<StageHandle, Props>(function Cyto
   persistPositionsRef.current = persistPositions;
 
   const pickRoots = React.useCallback((cy: Core) => {
-    const cores = cy.nodes().filter((n) => n.data("type") === "core" && n.style("display") !== "none");
+    const visible = (n: cytoscape.NodeSingular) => n.style("display") !== "none";
+    const mxs = cy.nodes().filter((n) => n.data("type") === "mx" && visible(n));
+    if (mxs.length) return mxs;
+    const cores = cy.nodes().filter((n) => n.data("type") === "core" && visible(n));
     if (cores.length) return cores;
     let best: cytoscape.NodeSingular | null = null;
     cy.nodes(":visible").forEach((n) => {
@@ -501,6 +517,11 @@ export const CytoscapeStage = React.forwardRef<StageHandle, Props>(function Cyto
         }}
         onGoto={(id) => selectNode(id, true)}
         onRemediation={onRemediation}
+        switchPorts={portPanel?.ports}
+        switchSerial={portPanel?.serial}
+        highlightPortId={portPanel?.highlightPortId}
+        mergeCandidates={mergeCandidates}
+        onMerge={onMerge}
       />
     </main>
   );
@@ -525,4 +546,43 @@ function esc(v: unknown): string {
     .replace(/</g, "&lt;")
     .replace(/>/g, "&gt;")
     .replace(/"/g, "&quot;");
+}
+
+function canonicalPort(value: unknown): string {
+  const text = String(value || "").trim();
+  if (!text) return "";
+  const low = text.toLowerCase();
+  if (low.startsWith("port") && /^\d+$/.test(low.slice(4))) return String(parseInt(low.slice(4), 10));
+  if (/^\d+$/.test(text)) return String(parseInt(text, 10));
+  return text;
+}
+
+function resolvePortPanel(
+  graph: TopologyGraph | null,
+  node?: TopologyNode,
+  link?: TopologyLink
+): { serial: string; ports: Array<Record<string, unknown>>; highlightPortId?: string } | null {
+  if (!graph?.switch_ports) return null;
+  const catalogs = graph.switch_ports;
+  if (node && catalogs[node.id]) {
+    return { serial: node.id, ports: catalogs[node.id] };
+  }
+  if (!link) return null;
+  const srcSerial = String(link.source_port?.serial || link.source || "");
+  const tgtSerial = String(link.target_port?.serial || link.target || "");
+  if (catalogs[srcSerial]) {
+    return {
+      serial: srcSerial,
+      ports: catalogs[srcSerial],
+      highlightPortId: canonicalPort(link.source_port?.portId || link.source_interface),
+    };
+  }
+  if (catalogs[tgtSerial]) {
+    return {
+      serial: tgtSerial,
+      ports: catalogs[tgtSerial],
+      highlightPortId: canonicalPort(link.target_port?.portId || link.target_interface),
+    };
+  }
+  return null;
 }

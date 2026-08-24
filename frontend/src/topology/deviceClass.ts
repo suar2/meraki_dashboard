@@ -8,11 +8,12 @@ export interface ClassStyle {
 }
 
 export const DEVICE_CLASSES: Record<DeviceClass, ClassStyle> = {
+  mx: { label: "MX Firewall", cssVar: "--color-mx", sizeVar: "--size-node-wlc", tier: 9 },
   core: { label: "Core", cssVar: "--color-core", sizeVar: "--size-node-core", tier: 8 },
-  mx: { label: "MX Firewall", cssVar: "--color-mx", sizeVar: "--size-node-wlc", tier: 7 },
   access: { label: "Access", cssVar: "--color-access", sizeVar: "--size-node-access", tier: 6 },
   wlc: { label: "WLC", cssVar: "--color-wlc", sizeVar: "--size-node-wlc", tier: 5 },
   ap: { label: "Wireless", cssVar: "--color-ap", sizeVar: "--size-node-client", tier: 4 },
+  server: { label: "Server", cssVar: "--color-server", sizeVar: "--size-node-access", tier: 4 },
   mv: { label: "Camera", cssVar: "--color-mv", sizeVar: "--size-node-client", tier: 3 },
   mg: { label: "Cellular", cssVar: "--color-mg", sizeVar: "--size-node-access", tier: 3 },
   phone: { label: "VoIP Phone", cssVar: "--color-phone", sizeVar: "--size-node-client", tier: 2 },
@@ -22,11 +23,12 @@ export const DEVICE_CLASSES: Record<DeviceClass, ClassStyle> = {
 };
 
 export const DEVICE_CLASS_ORDER: DeviceClass[] = [
-  "core",
   "mx",
+  "core",
   "access",
   "wlc",
   "ap",
+  "server",
   "mv",
   "mg",
   "phone",
@@ -62,6 +64,10 @@ export function classifyNode(node: TopologyNode, coreIds: Set<string>): DeviceCl
   const ntype = (node.type || "").toLowerCase();
 
   if (ntype === "client" || sub === "client") return "client";
+  if (sub === "server" || ntype === "server") return "server";
+  if (/proxmox|esxi|vmware|truenas|synology|qnap|unraid|\bnas\b|\bserver\b/i.test(`${hostname} ${platform}`)) {
+    if (ntype !== "client") return "server";
+  }
   if (/^SEP/i.test(hostname)) return "phone";
   if (sub === "camera" || product === "camera") return "mv";
   if (sub === "cellular" || product.includes("cellular")) return "mg";

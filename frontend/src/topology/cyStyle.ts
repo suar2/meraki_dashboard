@@ -49,7 +49,7 @@ export function buildCyStyle(isDark: boolean): StylesheetJson {
       },
     },
     {
-      selector: 'node[type="mx"], node[type="wlc"]',
+      selector: 'node[type="mx"], node[type="wlc"], node[type="server"]',
       style: { "font-size": 10, "font-weight": 600, "text-margin-y": 6 },
     },
     {

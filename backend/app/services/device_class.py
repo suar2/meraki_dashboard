@@ -4,11 +4,12 @@ import re
 from typing import Any, Literal
 
 DeviceClass = Literal[
+    "mx",
     "core",
     "access",
     "wlc",
-    "mx",
     "ap",
+    "server",
     "mv",
     "mg",
     "phone",
@@ -18,11 +19,12 @@ DeviceClass = Literal[
 ]
 
 DEVICE_CLASS_ORDER: list[DeviceClass] = [
-    "core",
     "mx",
+    "core",
     "access",
     "wlc",
     "ap",
+    "server",
     "mv",
     "mg",
     "phone",
@@ -32,11 +34,12 @@ DEVICE_CLASS_ORDER: list[DeviceClass] = [
 ]
 
 DEVICE_CLASS_LABELS: dict[DeviceClass, str] = {
+    "mx": "MX Firewall",
     "core": "Core",
     "access": "Access",
     "wlc": "WLC",
-    "mx": "MX Firewall",
     "ap": "Wireless",
+    "server": "Server",
     "mv": "Camera",
     "mg": "Cellular",
     "phone": "VoIP Phone",
@@ -85,6 +88,11 @@ def classify_device(
         return "client"
     if sub == "wireless" and ntype == "client":
         return "client"
+    if sub in {"server"} or ntype == "server":
+        return "server"
+    if re.search(r"proxmox|esxi|vmware|truenas|synology|qnap|unraid|\bnas\b|\bserver\b", blob, re.I):
+        if ntype != "client":
+            return "server"
     if re.match(r"^SEP", host, re.I):
         return "phone"
 

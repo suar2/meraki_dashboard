@@ -1,7 +1,13 @@
 from fastapi import APIRouter, HTTPException
 
 from app.config import settings
-from app.models.schemas import AuditLogEntry, LayoutPayload, MerakiApiKeyPayload, RemediationExecuteRequest
+from app.models.schemas import (
+    AuditLogEntry,
+    EntityMergeRequest,
+    LayoutPayload,
+    MerakiApiKeyPayload,
+    RemediationExecuteRequest,
+)
 from app.services.audit_service import AuditService
 from app.services.layout_service import LayoutService
 from app.services.meraki_client import MerakiAPIError, MerakiClient
@@ -56,6 +62,34 @@ async def topology(org_id: str, network_id: str):
         return await topology_service.build(org_id, network_id)
     except MerakiAPIError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.get("/entities/merges/{org_id}/{network_id}")
+async def list_entity_merges(org_id: str, network_id: str):
+    return topology_service.entity_merges.list_merges(org_id, network_id)
+
+
+@router.post("/entities/merge")
+async def save_entity_merge(payload: EntityMergeRequest):
+    try:
+        record = topology_service.entity_merges.save_merge(
+            payload.org_id,
+            payload.network_id,
+            payload.model_dump(),
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    topology_service.invalidate_cache(payload.org_id, payload.network_id)
+    return record
+
+
+@router.delete("/entities/merge/{org_id}/{network_id}/{merge_id}")
+async def delete_entity_merge(org_id: str, network_id: str, merge_id: str):
+    deleted = topology_service.entity_merges.delete_merge(org_id, network_id, merge_id)
+    if not deleted:
+        raise HTTPException(status_code=404, detail="Merge not found.")
+    topology_service.invalidate_cache(org_id, network_id)
+    return {"status": "ok"}
 
 
 @router.post("/layout")

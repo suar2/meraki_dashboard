@@ -1,10 +1,11 @@
 export type Severity = "critical" | "warning" | "info";
 export type DeviceClass =
+  | "mx"
   | "core"
   | "access"
   | "wlc"
-  | "mx"
   | "ap"
+  | "server"
   | "mv"
   | "mg"
   | "phone"
@@ -94,6 +95,7 @@ export interface TopologyLink {
   target_platform: string;
   source_device_class: string;
   target_device_class: string;
+  interface_role?: string;
 }
 
 export interface TopologyGraph {

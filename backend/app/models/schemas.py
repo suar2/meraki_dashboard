@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Literal
 
 from pydantic import BaseModel, Field
@@ -93,6 +93,7 @@ class TopologyLink(BaseModel):
     target_platform: str = ""
     source_device_class: str = ""
     target_device_class: str = ""
+    interface_role: str = ""
 
 
 class TopologySummary(BaseModel):
@@ -156,3 +157,25 @@ class RemediationExecuteRequest(BaseModel):
 
 class MerakiApiKeyPayload(BaseModel):
     api_key: str
+
+
+class EntityMergeInterface(BaseModel):
+    switch_serial: str = ""
+    port_id: str = ""
+    role: str = ""
+    member_id: str = ""
+
+
+class EntityMergeRequest(BaseModel):
+    org_id: str
+    network_id: str
+    survivor_id: str
+    member_ids: list[str] = Field(default_factory=list)
+    label: str = ""
+    device_class: str = "server"
+    interfaces: list[EntityMergeInterface] = Field(default_factory=list)
+
+
+class EntityMergeRecord(EntityMergeRequest):
+    id: str
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))

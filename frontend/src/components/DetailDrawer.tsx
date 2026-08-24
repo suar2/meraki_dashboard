@@ -1,4 +1,6 @@
+import React from "react";
 import { Icon } from "./Icon";
+import { SwitchPortPanel } from "./SwitchPortPanel";
 import { asDeviceClass, classVisuals } from "../topology/deviceClass";
 import { shortIface } from "../topology/shortIface";
 import type { RemediationAction, TopologyLink, TopologyNode } from "../types/topology";
@@ -12,6 +14,14 @@ interface NeighborRow {
   theirIf: string;
 }
 
+export interface MergeRequest {
+  survivorId: string;
+  memberId: string;
+  label: string;
+  survivorRole: string;
+  memberRole: string;
+}
+
 interface Props {
   node?: TopologyNode;
   link?: TopologyLink;
@@ -20,6 +30,11 @@ interface Props {
   onClose: () => void;
   onGoto: (id: string) => void;
   onRemediation: (action: RemediationAction) => void;
+  switchPorts?: Array<Record<string, unknown>>;
+  switchSerial?: string;
+  highlightPortId?: string;
+  mergeCandidates?: TopologyNode[];
+  onMerge?: (request: MergeRequest) => void;
 }
 
 function Cell({ k, v, hideEmpty }: { k: string; v: unknown; hideEmpty?: boolean }) {
@@ -40,7 +55,7 @@ function portSummary(port: Record<string, unknown>) {
   return {
     serial: String(port.serial || "—"),
     portId: String(port.portId || "—"),
-    name: String(config.name || status.name || "—"),
+    name: String(config.name || status.name || port.label || "—"),
     mode: String(config.type || "—"),
     vlan: String(config.vlan ?? config.nativeVlan ?? "—"),
     allowed: String(config.allowedVlans || "—"),
@@ -48,18 +63,51 @@ function portSummary(port: Record<string, unknown>) {
     speed: String(status.speed || "—"),
     link: String(status.status || "—"),
     poe: String(poe.status ?? config.poeEnabled ?? "—"),
+    role: String(port.role || ""),
   };
 }
 
-export function DetailDrawer({ node, link, neighbors, open, onClose, onGoto, onRemediation }: Props) {
+export function DetailDrawer({
+  node,
+  link,
+  neighbors,
+  open,
+  onClose,
+  onGoto,
+  onRemediation,
+  switchPorts,
+  switchSerial,
+  highlightPortId,
+  mergeCandidates,
+  onMerge,
+}: Props) {
+  const [mergeId, setMergeId] = React.useState("");
+  const [mergeLabel, setMergeLabel] = React.useState("");
+  const [survivorRole, setSurvivorRole] = React.useState("management");
+  const [memberRole, setMemberRole] = React.useState("fabric");
+
+  React.useEffect(() => {
+    setMergeId("");
+    setMergeLabel(node?.hostname || node?.label || "Server");
+    setSurvivorRole("management");
+    setMemberRole("fabric");
+  }, [node?.id]);
+
   if (!open || (!node && !link)) {
     return <aside id="detail" />;
   }
+
+  const portStrip =
+    switchPorts && switchPorts.length && switchSerial ? (
+      <SwitchPortPanel serial={switchSerial} ports={switchPorts} highlightPortId={highlightPortId} />
+    ) : null;
 
   if (node) {
     const cls = classVisuals(asDeviceClass(String(node.device_class)));
     const members = node.stack_members || [];
     const meta = node.metadata || {};
+    const physicalIfaces = Array.isArray(meta.physical_interfaces) ? (meta.physical_interfaces as Array<Record<string, unknown>>) : [];
+    const canMerge = Boolean(onMerge && mergeCandidates && mergeCandidates.length && !node.managed && node.subtype !== "wireless");
     return (
       <aside id="detail" className="open">
         <div className="d-head">
@@ -77,6 +125,7 @@ export function DetailDrawer({ node, link, neighbors, open, onClose, onGoto, onR
           <div className="d-ip">{node.management_ip || "—"}</div>
         </div>
         <div className="d-body">
+          {portStrip}
           <div className="d-sub">
             <span className="bar" />
             <span className="t">Details</span>
@@ -99,6 +148,23 @@ export function DetailDrawer({ node, link, neighbors, open, onClose, onGoto, onR
             <Cell k="SSID" v={meta.ssid} hideEmpty />
             <Cell k="OS" v={meta.os} hideEmpty />
           </div>
+          {physicalIfaces.length > 0 && (
+            <>
+              <div className="d-sub">
+                <span className="bar" />
+                <span className="t">Physical interfaces</span>
+              </div>
+              <div className="d-grid">
+                {physicalIfaces.map((iface) => (
+                  <Cell
+                    key={`${iface.port_id}-${iface.role}`}
+                    k={String(iface.role || "link")}
+                    v={`p${iface.port_id}${iface.switch_serial ? ` · ${iface.switch_serial}` : ""}`}
+                  />
+                ))}
+              </div>
+            </>
+          )}
           {members.length > 1 && (
             <>
               <div className="d-sub">
@@ -151,6 +217,68 @@ export function DetailDrawer({ node, link, neighbors, open, onClose, onGoto, onR
               </div>
             ))}
           </div>
+          {canMerge && (
+            <div className="merge-box">
+              <div className="d-sub">
+                <span className="bar" />
+                <span className="t">Merge as same physical device</span>
+              </div>
+              <p className="merge-help">
+                Use this when two NICs (for example management and fabric) belong to one chassis. The association is stored in the backend.
+              </p>
+              <label className="merge-field">
+                Other device
+                <select value={mergeId} onChange={(e) => setMergeId(e.target.value)}>
+                  <option value="">Select…</option>
+                  {mergeCandidates!.map((c) => (
+                    <option key={c.id} value={c.id}>
+                      {c.hostname || c.label}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label className="merge-field">
+                Chassis name
+                <input value={mergeLabel} onChange={(e) => setMergeLabel(e.target.value)} />
+              </label>
+              <div className="merge-roles">
+                <label className="merge-field">
+                  This NIC
+                  <select value={survivorRole} onChange={(e) => setSurvivorRole(e.target.value)}>
+                    <option value="management">Management</option>
+                    <option value="fabric">Fabric / SFP</option>
+                    <option value="uplink">Uplink</option>
+                    <option value="other">Other</option>
+                  </select>
+                </label>
+                <label className="merge-field">
+                  Other NIC
+                  <select value={memberRole} onChange={(e) => setMemberRole(e.target.value)}>
+                    <option value="management">Management</option>
+                    <option value="fabric">Fabric / SFP</option>
+                    <option value="uplink">Uplink</option>
+                    <option value="other">Other</option>
+                  </select>
+                </label>
+              </div>
+              <button
+                type="button"
+                className="fix-btn"
+                disabled={!mergeId}
+                onClick={() =>
+                  onMerge?.({
+                    survivorId: node.id,
+                    memberId: mergeId,
+                    label: mergeLabel || "Server",
+                    survivorRole,
+                    memberRole,
+                  })
+                }
+              >
+                Merge chassis
+              </button>
+            </div>
+          )}
         </div>
       </aside>
     );
@@ -178,12 +306,14 @@ export function DetailDrawer({ node, link, neighbors, open, onClose, onGoto, onR
         </div>
       </div>
       <div className="d-body">
+        {portStrip}
         <div className="d-sub">
           <span className="bar" />
           <span className="t">Link</span>
         </div>
         <div className="d-grid">
           <Cell k="Discovery" v={link!.discovery_method} />
+          <Cell k="Role" v={link!.interface_role} hideEmpty />
           <Cell k="Source IP" v={link!.source_management_ip} hideEmpty />
           <Cell k="Target IP" v={link!.target_management_ip} hideEmpty />
           <Cell k="Source platform" v={link!.source_platform} hideEmpty />
@@ -196,6 +326,7 @@ export function DetailDrawer({ node, link, neighbors, open, onClose, onGoto, onR
         <div className="d-grid">
           <Cell k="Device" v={src.serial} />
           <Cell k="Port" v={src.portId} />
+          <Cell k="Role" v={src.role} hideEmpty />
           <Cell k="Mode" v={src.mode} />
           <Cell k="VLAN" v={src.vlan} />
           <Cell k="Allowed VLANs" v={src.allowed} hideEmpty />
@@ -211,6 +342,7 @@ export function DetailDrawer({ node, link, neighbors, open, onClose, onGoto, onR
         <div className="d-grid">
           <Cell k="Device" v={tgt.serial} />
           <Cell k="Port" v={tgt.portId} />
+          <Cell k="Role" v={tgt.role} hideEmpty />
           <Cell k="Mode" v={tgt.mode} />
           <Cell k="VLAN" v={tgt.vlan} />
           <Cell k="Allowed VLANs" v={tgt.allowed} hideEmpty />
