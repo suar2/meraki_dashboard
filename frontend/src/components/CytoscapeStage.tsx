@@ -579,10 +579,14 @@ export const CytoscapeStage = React.forwardRef<StageHandle, Props>(function Cyto
       const rect = host.getBoundingClientRect();
       const rp = { x: ev.clientX - rect.left, y: ev.clientY - rect.top };
       const overNode = live.nodes(":visible").some((n) => {
-        const bb = n.renderedBoundingBox({ includeLabels: false });
-        return rp.x >= bb.x1 && rp.x <= bb.x2 && rp.y >= bb.y1 && rp.y <= bb.y2;
+        const p = n.renderedPosition();
+        const w = Math.max(n.renderedWidth() / 2, 10);
+        const h = Math.max(n.renderedHeight() / 2, 10);
+        return Math.abs(p.x - rp.x) <= w && Math.abs(p.y - rp.y) <= h;
       });
       if (overNode) return;
+      ev.preventDefault();
+      ev.stopPropagation();
       boxingRef.current = true;
       marqueeRef.current = { x0: rp.x, y0: rp.y, additive: ev.ctrlKey || ev.metaKey || ev.shiftKey };
       setMarquee({ left: rp.x, top: rp.y, width: 0, height: 0 });
