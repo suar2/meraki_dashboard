@@ -96,6 +96,8 @@ class TopologyLink(BaseModel):
     interface_role: str = ""
     discovery_sources: list[str] = Field(default_factory=list)
     identity_resolution: dict[str, Any] = Field(default_factory=dict)
+    confidence: str = ""
+    evidence: list[dict[str, Any]] = Field(default_factory=list)
 
 
 class TopologySummary(BaseModel):

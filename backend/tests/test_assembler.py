@@ -373,6 +373,53 @@ class AssemblerLabTests(unittest.TestCase):
         self.assertEqual(len(nas), 1)
         self.assertEqual((nas[0].source_port or {}).get("portId"), "7")
 
+    def test_camera_appears_from_client_without_linklayer(self):
+        """Managed camera in devices+clients only must still draw MS --port--> MV."""
+        result = _assemble(
+            topology={"nodes": [], "links": []},
+            lldp_cdp_by_serial={},
+            status_by_serial={
+                MS: {"8": {"portId": "8", "status": "Connected", "clientCount": 1}},
+            },
+            clients=[
+                {
+                    "id": "cam-as-client",
+                    "mac": "00:18:0a:aa:aa:04",
+                    "description": "Main - camera",
+                    "recentDeviceSerial": MS,
+                    "switchport": "8",
+                    "connection": "Wired",
+                    "status": "Online",
+                }
+            ],
+        )
+        nodes = result["nodes"]
+        links = result["links"]
+        self.assertIn(MV, nodes)
+        self.assertEqual(nodes[MV].label, "Main - camera")
+        self.assertTrue(nodes[MV].managed)
+        self.assertFalse(any(nid.startswith("client-") and "cam" in nid for nid in nodes))
+        ms_mv = [lk for lk in links if {lk.source, lk.target} == {MS, MV}]
+        self.assertEqual(len(ms_mv), 1)
+        self.assertEqual(ms_mv[0].source, MS)
+        self.assertEqual(str((ms_mv[0].source_port or {}).get("portId")), "8")
+        self.assertIn("wired_client_switchport", ms_mv[0].discovery_sources)
+        self.assertEqual(ms_mv[0].confidence, "medium")
+
+    def test_ms_mr_single_selectable_uplink(self):
+        result = _assemble()
+        ms_mr = [lk for lk in result["links"] if {lk.source, lk.target} == {MS, MR}]
+        self.assertEqual(len(ms_mr), 1)
+        link = ms_mr[0]
+        self.assertEqual(link.link_type, "wired")
+        self.assertEqual(link.source, MS)
+        self.assertEqual(str((link.source_port or {}).get("portId")), "2")
+        self.assertTrue(link.id)
+        self.assertEqual(link.confidence, "high")
+        keys = {item["key"] for item in link.evidence if item.get("ok")}
+        self.assertIn("topology_link_layer", keys)
+        self.assertIn("lldp", keys)
+
     def test_orphan_suppression(self):
         result = _assemble()
         self.assertNotIn("client-ghost", result["nodes"])

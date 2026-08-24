@@ -98,6 +98,8 @@ export interface TopologyLink {
   interface_role?: string;
   discovery_sources?: string[];
   identity_resolution?: Record<string, unknown>;
+  confidence?: string;
+  evidence?: Array<{ key: string; label: string; ok: boolean }>;
 }
 
 export interface TopologyGraph {

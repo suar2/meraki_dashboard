@@ -7,6 +7,8 @@ import { buildCyElements, linkPassesOpsFilters, nodePassesOpsFilters } from "../
 import { applyCyTheme, classColor, classTier } from "../topology/cyStyle";
 import { asDeviceClass, DEVICE_CLASSES } from "../topology/deviceClass";
 import type { LayoutMode, UiPrefs } from "../topology/prefs";
+import { branchForPort, groupIdForHiddenMember, peersOnSwitchPort, presentGraph } from "../topology/presentGraph";
+import { type TraceHop, traceToInternet } from "../topology/tracePath";
 import { saveLayout } from "../api/client";
 import type { RemediationAction, TopologyGraph, TopologyLink, TopologyNode } from "../types/topology";
 
@@ -59,6 +61,7 @@ export interface StageHandle {
   exportJSON: () => void;
   selectNode: (id: string, recenter?: boolean) => void;
   getVisibleCount: () => number;
+  highlightPort: (serial: string, portId: string) => void;
 }
 
 interface Props {
@@ -88,9 +91,19 @@ export const CytoscapeStage = React.forwardRef<StageHandle, Props>(function Cyto
   const [selectedNode, setSelectedNode] = React.useState<TopologyNode | undefined>();
   const [selectedLink, setSelectedLink] = React.useState<TopologyLink | undefined>();
   const [neighbors, setNeighbors] = React.useState<{ id: string; label: string; color: string; type: string; myIf: string; theirIf: string }[]>([]);
+  const [traceHops, setTraceHops] = React.useState<TraceHop[]>([]);
+  const [ctxMenu, setCtxMenu] = React.useState<{ x: number; y: number; nodeId: string } | null>(null);
+  const [portHighlight, setPortHighlight] = React.useState<string>("");
+  const pendingSelect = React.useRef<string | null>(null);
+  const pendingFocus = React.useRef<{ nodeIds: string[]; linkIds: string[] } | null>(null);
 
-  const nodeById = React.useMemo(() => new Map((graph?.nodes || []).map((n) => [n.id, n])), [graph]);
-  const linkById = React.useMemo(() => new Map((graph?.links || []).map((l) => [l.id, l])), [graph]);
+  const presented = React.useMemo(() => {
+    if (!graph) return null;
+    return presentGraph(graph, presentOpts(prefs));
+  }, [graph, prefs.visibilityMode, prefs.collapseWireless, prefs.collapseDownstream, prefs.expandedGroups]);
+
+  const nodeById = React.useMemo(() => new Map((presented?.nodes || graph?.nodes || []).map((n) => [n.id, n])), [presented, graph]);
+  const linkById = React.useMemo(() => new Map((presented?.links || graph?.links || []).map((l) => [l.id, l])), [presented, graph]);
   const nodeByIdRef = React.useRef(nodeById);
   const linkByIdRef = React.useRef(linkById);
   nodeByIdRef.current = nodeById;
@@ -100,6 +113,16 @@ export const CytoscapeStage = React.forwardRef<StageHandle, Props>(function Cyto
     () => resolvePortPanel(graph, selectedNode, selectedLink),
     [graph, selectedNode, selectedLink]
   );
+  const peersByPort = React.useMemo(() => {
+    if (!graph || !portPanel) return {};
+    const map: Record<string, Array<{ id: string; label: string }>> = {};
+    for (const port of portPanel.ports) {
+      const id = String(port.portId || "");
+      if (!id) continue;
+      map[id] = peersOnSwitchPort(graph, portPanel.serial, id);
+    }
+    return map;
+  }, [graph, portPanel]);
   const mergeCandidates = React.useMemo(() => {
     if (!graph || !selectedNode) return [];
     if (selectedNode.managed || selectedNode.subtype === "wireless") return [];
@@ -177,7 +200,7 @@ export const CytoscapeStage = React.forwardRef<StageHandle, Props>(function Cyto
             n.style("display", "none");
             return;
           }
-          const incident = graph.links.filter((l) => l.source === raw.id || l.target === raw.id);
+          const incident = (presented || graph).links.filter((l) => l.source === raw.id || l.target === raw.id);
           const okType = !hiddenTypes.has(String(n.data("type")));
           const okPlat = hiddenPlat.size === 0 || !hiddenPlat.has(String(n.data("platform")));
           const okFw = hiddenFw.size === 0 || !hiddenFw.has(String(n.data("sw_version"))) || n.data("sw_version") === "—";
@@ -222,36 +245,74 @@ export const CytoscapeStage = React.forwardRef<StageHandle, Props>(function Cyto
       if (prefs.backbone) cy.edges('[kind="backbone"]').addClass("bb-hi");
       else cy.edges('[kind="backbone"]').removeClass("bb-hi");
     },
-    [graph, nodeById, linkById, prefs, onVisibleCount]
+    [graph, presented, nodeById, linkById, prefs, onVisibleCount]
   );
 
   const clearSel = React.useCallback(
     (cy: Core) => {
-      cy.elements().removeClass("sel nbr hi faded");
+      cy.elements().removeClass("sel nbr hi faded trace");
       setSelectedNode(undefined);
       setSelectedLink(undefined);
       setNeighbors([]);
+      setTraceHops([]);
+      setPortHighlight("");
+      setCtxMenu(null);
       setPrefs({ selectedId: null, selectedKind: null });
     },
     [setPrefs]
+  );
+
+  const expandGroup = React.useCallback(
+    (groupId: string) => {
+      const next = new Set(prefs.expandedGroups || []);
+      next.add(groupId);
+      setPrefs({ expandedGroups: [...next] });
+    },
+    [prefs.expandedGroups, setPrefs]
+  );
+
+  const expandForNode = React.useCallback(
+    (id: string) => {
+      if (!graph) return false;
+      const gid = groupIdForHiddenMember(graph, id, {
+        collapseWireless: prefs.collapseWireless !== false,
+        collapseDownstream: prefs.collapseDownstream !== false,
+        expandedGroups: prefs.expandedGroups || [],
+      });
+      if (!gid) return false;
+      pendingSelect.current = id;
+      expandGroup(gid);
+      return true;
+    },
+    [graph, prefs.collapseWireless, prefs.collapseDownstream, prefs.expandedGroups, expandGroup]
   );
 
   const selectNode = React.useCallback(
     (id: string, recenter = false) => {
       const cy = cyRef.current;
       if (!cy) return;
+      const rawPresented = nodeByIdRef.current.get(id);
+      if (rawPresented?.type === "group") {
+        expandGroup(id);
+        return;
+      }
+      if (expandForNode(id)) return;
       const node = cy.getElementById(id);
-      if (!node || node.empty()) return;
+      if (!node || node.empty()) {
+        if (graph && graph.nodes.some((n) => n.id === id)) expandForNode(id);
+        return;
+      }
       if (node.style("display") === "none") node.style("display", "element");
-      cy.elements().removeClass("sel nbr hi faded");
+      cy.elements().removeClass("sel nbr hi faded trace");
       const nhood = node.closedNeighborhood();
       cy.elements().not(nhood).addClass("faded");
       node.neighborhood("node").addClass("nbr");
       node.connectedEdges().addClass("hi");
       node.addClass("sel");
-      const raw = nodeByIdRef.current.get(id);
+      const raw = nodeByIdRef.current.get(id) || graph?.nodes.find((n) => n.id === id);
       setSelectedNode(raw);
       setSelectedLink(undefined);
+      setPortHighlight("");
       const rows: typeof neighbors = [];
       node.connectedEdges().forEach((e) => {
         const ed = e.data();
@@ -274,7 +335,7 @@ export const CytoscapeStage = React.forwardRef<StageHandle, Props>(function Cyto
         cy.animate({ fit: { eles: visNhood, padding: 80 } }, { duration: 380 });
       }
     },
-    [setPrefs]
+    [setPrefs, expandGroup, expandForNode, graph]
   );
 
   const selectLink = React.useCallback(
@@ -283,7 +344,7 @@ export const CytoscapeStage = React.forwardRef<StageHandle, Props>(function Cyto
       if (!cy) return;
       const edge = cy.getElementById(id);
       if (!edge || edge.empty()) return;
-      cy.elements().removeClass("sel nbr hi faded");
+      cy.elements().removeClass("sel nbr hi faded trace");
       const nhood = edge.connectedNodes().union(edge);
       cy.elements().not(nhood).addClass("faded");
       edge.addClass("sel hi");
@@ -296,12 +357,83 @@ export const CytoscapeStage = React.forwardRef<StageHandle, Props>(function Cyto
     [setPrefs]
   );
 
+  const applyFocus = React.useCallback((nodeIds: string[], linkIds: string[]) => {
+    const cy = cyRef.current;
+    if (!cy) return;
+    const keep = new Set([...nodeIds, ...linkIds]);
+    cy.nodes().forEach((n) => {
+      if (keep.has(n.id())) return;
+      const members = (n.data("memberIds") as string[] | undefined) || [];
+      if (members.some((id) => keep.has(id))) keep.add(n.id());
+    });
+    cy.edges().forEach((e) => {
+      if (keep.has(e.source().id()) && keep.has(e.target().id())) keep.add(e.id());
+    });
+    cy.elements().removeClass("sel nbr hi faded trace");
+    cy.elements().forEach((el) => {
+      if (keep.has(el.id())) el.addClass("trace");
+      else el.addClass("faded");
+    });
+  }, []);
+
+  const runTrace = React.useCallback(
+    (nodeId: string) => {
+      if (!graph) return;
+      const hops = traceToInternet(graph, nodeId);
+      const start = graph.nodes.find((n) => n.id === nodeId) || nodeByIdRef.current.get(nodeId);
+      if (start?.type === "group") {
+        expandGroup(start.id);
+        setCtxMenu(null);
+        return;
+      }
+      setTraceHops(hops);
+      setCtxMenu(null);
+      const nodeIds = hops.map((h) => h.nodeId).filter((id) => id !== "internet");
+      const linkIds = hops.map((h) => h.linkId || "").filter(Boolean);
+      const extra: string[] = [];
+      for (const id of nodeIds) {
+        const gid = groupIdForHiddenMember(graph, id, {
+          collapseWireless: prefs.collapseWireless !== false,
+          collapseDownstream: prefs.collapseDownstream !== false,
+          expandedGroups: prefs.expandedGroups || [],
+        });
+        if (gid) extra.push(gid);
+      }
+      if (start) {
+        setSelectedNode(start);
+        setSelectedLink(undefined);
+        setPrefs({ selectedId: nodeId, selectedKind: "node" });
+      }
+      if (extra.length) {
+        pendingFocus.current = { nodeIds, linkIds };
+        pendingSelect.current = nodeId;
+        setPrefs({ expandedGroups: [...new Set([...(prefs.expandedGroups || []), ...extra])] });
+        return;
+      }
+      applyFocus(nodeIds, linkIds);
+    },
+    [graph, applyFocus, prefs.collapseWireless, prefs.collapseDownstream, prefs.expandedGroups, setPrefs, expandGroup]
+  );
+
+  const highlightPort = React.useCallback(
+    (serial: string, portId: string) => {
+      if (!graph) return;
+      const branch = branchForPort(graph, serial, portId);
+      setPortHighlight(portId);
+      setTraceHops([]);
+      applyFocus(branch.nodeIds, branch.linkIds);
+    },
+    [graph, applyFocus]
+  );
+
   const selectNodeRef = React.useRef(selectNode);
   const selectLinkRef = React.useRef(selectLink);
   const clearSelRef = React.useRef(clearSel);
+  const runTraceRef = React.useRef(runTrace);
   selectNodeRef.current = selectNode;
   selectLinkRef.current = selectLink;
   clearSelRef.current = clearSel;
+  runTraceRef.current = runTrace;
 
   React.useEffect(() => {
     if (!containerRef.current) return;
@@ -317,13 +449,27 @@ export const CytoscapeStage = React.forwardRef<StageHandle, Props>(function Cyto
     applyCyTheme(cy, document.documentElement.getAttribute("data-theme") !== "light");
 
     cy.on("tap", "node", (e: EventObject) => {
+      setCtxMenu(null);
       selectNodeRef.current(e.target.id(), true);
     });
     cy.on("tap", "edge", (e: EventObject) => {
+      setCtxMenu(null);
       selectLinkRef.current(e.target.id());
     });
     cy.on("tap", (e: EventObject) => {
-      if (e.target === cy) clearSelRef.current(cy);
+      if (e.target === cy) {
+        setCtxMenu(null);
+        clearSelRef.current(cy);
+      }
+    });
+    cy.on("cxttap", "node", (e: EventObject) => {
+      const orig = e.originalEvent as MouseEvent | undefined;
+      if (orig?.preventDefault) orig.preventDefault();
+      const stage = containerRef.current?.parentElement;
+      const r = stage?.getBoundingClientRect();
+      const x = orig && r ? orig.clientX - r.left : 24;
+      const y = orig && r ? orig.clientY - r.top : 24;
+      setCtxMenu({ x, y, nodeId: e.target.id() });
     });
     cy.on("mouseover", "node", () => {
       document.body.style.cursor = "pointer";
@@ -366,18 +512,18 @@ export const CytoscapeStage = React.forwardRef<StageHandle, Props>(function Cyto
 
   React.useEffect(() => {
     const cy = cyRef.current;
-    if (!cy || !graph) {
+    if (!cy || !graph || !presented) {
       cyRef.current?.elements().remove();
       return;
     }
     appliedSaved.current = false;
     cy.elements().remove();
-    cy.add(buildCyElements(graph));
+    cy.add(buildCyElements(presented));
     applyCyTheme(cy, prefs.theme !== "light");
     applyFilters(cy);
 
     const saved = graph.nodes.filter((n) => n.position && (n.position.x || n.position.y));
-    const useSaved = saved.length > graph.nodes.length * 0.5;
+    const useSaved = saved.length > graph.nodes.length * 0.5 && presented.nodes.length === graph.nodes.length;
     if (useSaved) {
       cy.nodes().forEach((n) => {
         const raw = nodeById.get(n.id());
@@ -397,7 +543,18 @@ export const CytoscapeStage = React.forwardRef<StageHandle, Props>(function Cyto
       color: classColor(String(n.device_class)),
     }));
     onSearchIndex(hits);
-  }, [graph]); // eslint-disable-line react-hooks/exhaustive-deps
+
+    if (pendingFocus.current) {
+      const focus = pendingFocus.current;
+      pendingFocus.current = null;
+      applyFocus(focus.nodeIds, focus.linkIds);
+    }
+    if (pendingSelect.current) {
+      const id = pendingSelect.current;
+      pendingSelect.current = null;
+      selectNode(id, true);
+    }
+  }, [graph, presented]); // eslint-disable-line react-hooks/exhaustive-deps
 
   React.useEffect(() => {
     const cy = cyRef.current;
@@ -460,6 +617,7 @@ export const CytoscapeStage = React.forwardRef<StageHandle, Props>(function Cyto
     },
     selectNode: (id: string, recenter?: boolean) => selectNode(id, recenter),
     getVisibleCount: () => cyRef.current?.nodes(":visible").length || 0,
+    highlightPort: (serial: string, portId: string) => highlightPort(serial, portId),
   }));
 
   const zoomBy = (factor: number) => {
@@ -473,7 +631,7 @@ export const CytoscapeStage = React.forwardRef<StageHandle, Props>(function Cyto
 
   return (
     <main id="stage">
-      <div id="cy" ref={containerRef} />
+      <div id="cy" ref={containerRef} onContextMenu={(e) => e.preventDefault()} />
       {!hasGraph && (
         <div id="import-state" className="show">
           <Icon name="search" />
@@ -489,6 +647,13 @@ export const CytoscapeStage = React.forwardRef<StageHandle, Props>(function Cyto
         </div>
       )}
       <div id="edge-tooltip" ref={tooltipRef} />
+      {ctxMenu && (
+        <div className="ctx-menu" style={{ left: ctxMenu.x, top: ctxMenu.y }} role="menu">
+          <button type="button" onClick={() => runTrace(ctxMenu.nodeId)}>
+            Trace to Internet
+          </button>
+        </div>
+      )}
       <div id="statusbar">
         <span>
           <span className="st-k">NODE</span> <b>{selectedNode?.hostname || selectedLink?.id || "None"}</b>
@@ -527,13 +692,30 @@ export const CytoscapeStage = React.forwardRef<StageHandle, Props>(function Cyto
         onRemediation={onRemediation}
         switchPorts={portPanel?.ports}
         switchSerial={portPanel?.serial}
-        highlightPortId={portPanel?.highlightPortId}
+        highlightPortId={portHighlight || portPanel?.highlightPortId}
+        peersByPort={peersByPort}
+        onPortClick={(portId) => {
+          if (portPanel?.serial) highlightPort(portPanel.serial, portId);
+        }}
+        onTrace={runTrace}
+        onExpandGroup={expandGroup}
+        traceHops={traceHops}
+        graph={graph}
         mergeCandidates={mergeCandidates}
         onMerge={onMerge}
       />
     </main>
   );
 });
+
+function presentOpts(prefs: UiPrefs) {
+  return {
+    visibilityMode: prefs.visibilityMode || "physical_clients",
+    collapseWireless: prefs.collapseWireless !== false,
+    collapseDownstream: prefs.collapseDownstream !== false,
+    expandedGroups: prefs.expandedGroups || [],
+  } as const;
+}
 
 function csvField(f: string): string {
   return /[",\n]/.test(f) ? `"${f.replace(/"/g, '""')}"` : f;

@@ -6,7 +6,8 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc --noEmit && vite build",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "test": "npx --yes tsx src/topology/regressions.ts"
   },
   "dependencies": {
     "axios": "^1.11.0",

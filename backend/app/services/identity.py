@@ -140,6 +140,18 @@ class ManagedInventory:
             if tail and tail in self.by_name:
                 device = self.by_name[tail]
                 return IdentityHit(str(device.get("serial")), "name_match", {"name": name})
+            compact = name_key.replace(" ", "").replace("-", "")
+            for key, device in self.by_name.items():
+                if key.replace(" ", "").replace("-", "") == compact and compact:
+                    return IdentityHit(str(device.get("serial")), "name_match", {"name": name})
+            model = str(name or "")
+            if model.upper().startswith("MV") or "camera" in name_key:
+                for device in self.by_serial.values():
+                    dmodel = str(device.get("model") or "").upper()
+                    dproduct = str(device.get("productType") or "").lower()
+                    if dmodel.startswith("MV") or dproduct == "camera":
+                        if _norm(device.get("name")) in name_key or name_key in _norm(device.get("name")):
+                            return IdentityHit(str(device.get("serial")), "name_match", {"name": name})
         ip_key = _norm(ip)
         if ip_key and ip_key in self.by_lan_ip:
             device = self.by_lan_ip[ip_key]

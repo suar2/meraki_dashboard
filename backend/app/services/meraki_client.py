@@ -79,6 +79,17 @@ class MerakiClient:
     async def get_network_devices(self, network_id: str) -> list[dict[str, Any]]:
         return await self._request("GET", f"/networks/{network_id}/devices")
 
+    async def get_organization_devices(self, org_id: str, network_id: str | None = None) -> list[dict[str, Any]]:
+        params: dict[str, Any] = {"perPage": 1000}
+        if network_id:
+            params["networkIds[]"] = network_id
+        try:
+            payload = await self._request("GET", f"/organizations/{org_id}/devices", params=params)
+        except MerakiAPIError as exc:
+            logger.warning("Organization devices endpoint failed for %s: %s", org_id, exc)
+            return []
+        return payload if isinstance(payload, list) else []
+
     async def get_network_topology(self, network_id: str) -> dict[str, Any]:
         return await self._request("GET", f"/networks/{network_id}/topology/linkLayer")
 

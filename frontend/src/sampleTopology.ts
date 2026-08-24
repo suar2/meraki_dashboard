@@ -59,7 +59,7 @@ function link(partial: Partial<TopologyLink> & Pick<TopologyLink, "id" | "source
   };
 }
 
-function catalogPort(portId: string, extra?: { type?: string; status?: string; speed?: string; poe?: boolean; name?: string }) {
+function catalogPort(portId: string, extra?: { type?: string; status?: string; speed?: string; poe?: boolean; name?: string; clients?: number }) {
   const connected = extra?.status === "Connected";
   return {
     portId,
@@ -77,6 +77,7 @@ function catalogPort(portId: string, extra?: { type?: string; status?: string; s
       portId,
       status: extra?.status || "Disconnected",
       speed: connected ? extra?.speed || "1 Gbps" : "",
+      clientCount: connected ? extra?.clients ?? 1 : 0,
     },
     connectedPeers: [],
   };
@@ -130,6 +131,8 @@ export const SAMPLE_GRAPH: TopologyGraph = {
       software_version: "31.1.5",
       serial: AP,
       device_class: "ap",
+      health: { state: "warning", critical_count: 0, warning_count: 1 },
+      issue_count: 1,
       metadata: { model: "MR36", productType: "wireless", lanIp: "10.1.2.10", firmware: "31.1.5", status: "online", mac: "00:18:0a:00:00:10" },
     }),
     node({
@@ -262,7 +265,7 @@ export const SAMPLE_GRAPH: TopologyGraph = {
       managed: false,
       device_class: "client",
       serial: "",
-      metadata: { description: "Eva Tablet", ssid: "Home", os: "iPadOS" },
+      metadata: { description: "Eva Tablet", ssid: "Home", os: "iPadOS", parent_id: AP },
     }),
     node({
       id: "client-bechtle",
@@ -275,7 +278,7 @@ export const SAMPLE_GRAPH: TopologyGraph = {
       managed: false,
       device_class: "client",
       serial: "",
-      metadata: { description: "Bechtle Notebook", ssid: "Home", os: "Windows" },
+      metadata: { description: "Bechtle Notebook", ssid: "Home", os: "Windows", parent_id: AP },
     }),
     node({
       id: "client-android",
@@ -288,7 +291,7 @@ export const SAMPLE_GRAPH: TopologyGraph = {
       managed: false,
       device_class: "client",
       serial: "",
-      metadata: { description: "Android", ssid: "Home" },
+      metadata: { description: "Android", ssid: "Home", parent_id: AP },
     }),
     node({
       id: "client-iphone",
@@ -301,7 +304,7 @@ export const SAMPLE_GRAPH: TopologyGraph = {
       managed: false,
       device_class: "client",
       serial: "",
-      metadata: { description: "Suars-iPhone", ssid: "Home", os: "iOS" },
+      metadata: { description: "Suars-iPhone", ssid: "Home", os: "iOS", parent_id: AP },
     }),
     node({
       id: "neighbor-wan",
@@ -434,7 +437,7 @@ export const SAMPLE_GRAPH: TopologyGraph = {
   switch_ports: {
     [MS]: [
       catalogPort("1", { type: "trunk", status: "Connected", name: "MX uplink" }),
-      catalogPort("2", { type: "trunk", status: "Connected", poe: true, name: "MR36 AP" }),
+      catalogPort("2", { type: "trunk", status: "Connected", poe: true, name: "MR36 AP", clients: 12 }),
       catalogPort("3"),
       catalogPort("4", { type: "access", status: "Connected", name: "Server mgmt" }),
       catalogPort("5", { type: "access", status: "Connected", name: "Pi4" }),
@@ -446,7 +449,7 @@ export const SAMPLE_GRAPH: TopologyGraph = {
       catalogPort("11"),
       catalogPort("12"),
       catalogPort("13", { type: "trunk" }),
-      catalogPort("14", { type: "trunk", status: "Connected", speed: "10 Gbps", name: "Server fabric" }),
+      catalogPort("14", { type: "trunk", status: "Connected", speed: "10 Gbps", name: "Server fabric", clients: 8 }),
     ],
   },
   clients_by_switch_port: {},

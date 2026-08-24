@@ -11,6 +11,7 @@ from datetime import datetime, timezone
 from typing import Any, Callable
 
 from app.models.schemas import TopologyLink, TopologyNode
+from app.services.evidence import stamp_link_evidence
 from app.services.identity import (
     ManagedInventory,
     extract_end_derived_id,
@@ -207,6 +208,8 @@ class TopologyAssembler:
         self._apply_merges()
         self._orient_hierarchy()
         self.links = merge_duplicate_links(self.links)
+        for link in self.links:
+            stamp_link_evidence(link)
         self._prune()
         self._stamp_connected_interfaces()
         return {
@@ -592,6 +595,23 @@ class TopologyAssembler:
                 managed = self.inventory.resolve_client(client)
                 if managed and managed.node_id in self.node_map and self.node_map[managed.node_id].managed:
                     self._merge_client_into_managed(managed.node_id, client)
+                    switch_serial, port_id = key
+                    if switch_serial in self.node_map:
+                        self._add_wired_edge(
+                            switch_serial,
+                            managed.node_id,
+                            source_port_id=str(port_id),
+                            target_port_id="uplink",
+                            discovery_method="wired_client_switchport",
+                            identity_resolution={
+                                "method": "client_switchport",
+                                "mac": normalize_mac(client.get("mac")),
+                                "description": client.get("description"),
+                                "switchport": port_id,
+                                "resolvedNode": managed.node_id,
+                            },
+                            link_id=f"client-phys-{switch_serial}-{port_id}-{managed.node_id}",
+                        )
                     continue
                 mac = normalize_mac(client.get("mac"))
                 if mac and mac in wireless_macs:

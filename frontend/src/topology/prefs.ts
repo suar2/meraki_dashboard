@@ -1,9 +1,14 @@
 export type LayoutMode = "breadthfirst" | "fcose";
 export type SeverityFilter = "all" | "critical" | "warning" | "healthy";
+export type VisibilityMode = "physical" | "physical_clients" | "full";
 
 export interface UiPrefs {
   theme: "dark" | "light";
   layout: LayoutMode;
+  visibilityMode: VisibilityMode;
+  collapseWireless: boolean;
+  collapseDownstream: boolean;
+  expandedGroups: string[];
   hiddenTypes: string[];
   platforms: string[];
   firmware: string[];
@@ -26,6 +31,10 @@ export const THEME_KEY = "topology-theme";
 export const defaultPrefs = (): UiPrefs => ({
   theme: "dark",
   layout: "breadthfirst",
+  visibilityMode: "physical_clients",
+  collapseWireless: true,
+  collapseDownstream: true,
+  expandedGroups: [],
   hiddenTypes: [],
   platforms: [],
   firmware: [],

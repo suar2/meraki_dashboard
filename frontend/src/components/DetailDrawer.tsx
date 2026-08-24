@@ -2,8 +2,11 @@ import React from "react";
 import { Icon } from "./Icon";
 import { SwitchPortPanel } from "./SwitchPortPanel";
 import { asDeviceClass, classVisuals } from "../topology/deviceClass";
+import { describeLinkEvidence } from "../topology/evidence";
+import { isDownstreamClient, isPhysicalChassis, isWirelessNode } from "../topology/presentGraph";
 import { shortIface } from "../topology/shortIface";
-import type { RemediationAction, TopologyLink, TopologyNode } from "../types/topology";
+import type { TraceHop } from "../topology/tracePath";
+import type { RemediationAction, TopologyGraph, TopologyLink, TopologyNode } from "../types/topology";
 
 interface NeighborRow {
   id: string;
@@ -33,6 +36,12 @@ interface Props {
   switchPorts?: Array<Record<string, unknown>>;
   switchSerial?: string;
   highlightPortId?: string;
+  peersByPort?: Record<string, Array<{ id: string; label: string }>>;
+  onPortClick?: (portId: string) => void;
+  onTrace?: (nodeId: string) => void;
+  onExpandGroup?: (groupId: string) => void;
+  traceHops?: TraceHop[];
+  graph?: TopologyGraph | null;
   mergeCandidates?: TopologyNode[];
   onMerge?: (request: MergeRequest) => void;
 }
@@ -46,6 +55,55 @@ function Cell({ k, v, hideEmpty }: { k: string; v: unknown; hideEmpty?: boolean 
       <div className="v">{text}</div>
     </div>
   );
+}
+
+function clientsBehind(graph: TopologyGraph | null | undefined, node: TopologyNode): number {
+  if (!graph) return 0;
+  const byId = new Map(graph.nodes.map((n) => [n.id, n]));
+  const seen = new Set<string>([node.id]);
+  const queue = [node.id];
+  let count = 0;
+  while (queue.length) {
+    const id = queue.shift()!;
+    for (const link of graph.links) {
+      if (link.source !== id && link.target !== id) continue;
+      const other = link.source === id ? link.target : link.source;
+      if (seen.has(other)) continue;
+      seen.add(other);
+      const peer = byId.get(other);
+      if (!peer) continue;
+      if (isWirelessNode(peer) || peer.type === "client" || isDownstreamClient(peer, byId)) {
+        count += 1;
+      }
+      const cls = asDeviceClass(String(peer.device_class));
+      if (isPhysicalChassis(peer) && cls !== "mx") queue.push(other);
+      else if (peer.subtype === "server" || cls === "server") queue.push(other);
+    }
+  }
+  return count;
+}
+
+function switchOps(ports: Array<Record<string, unknown>>, node: TopologyNode, graph?: TopologyGraph | null) {
+  const rec = (v: unknown) => (v && typeof v === "object" ? (v as Record<string, unknown>) : {});
+  let connected = 0;
+  let poe = 0;
+  let trunks = 0;
+  let warning = 0;
+  for (const port of ports) {
+    const sta = rec(port.status);
+    const cfg = rec(port.config);
+    const st = String(sta.status || "").toLowerCase();
+    if (st.includes("connect") || st === "up") connected += 1;
+    const poeSt = String(rec(sta.poe).status || "");
+    if (poeSt && poeSt.toLowerCase() !== "off" && poeSt.toLowerCase() !== "disabled") poe += 1;
+    else if (cfg.poeEnabled) poe += 1;
+    if (String(cfg.type || "").toLowerCase() === "trunk") trunks += 1;
+    if ((Array.isArray(sta.warnings) && sta.warnings.length) || (Array.isArray(sta.errors) && sta.errors.length) || st.includes("error")) {
+      warning += 1;
+    }
+  }
+  const clients = clientsBehind(graph, node);
+  return { connected, poe, trunks, warning, clients, issues: node.issue_count || 0, critical: node.health.critical_count, warnings: node.health.warning_count };
 }
 
 function portSummary(port: Record<string, unknown>) {
@@ -79,6 +137,12 @@ export function DetailDrawer({
   switchPorts,
   switchSerial,
   highlightPortId,
+  peersByPort,
+  onPortClick,
+  onTrace,
+  onExpandGroup,
+  traceHops,
+  graph,
   mergeCandidates,
   onMerge,
 }: Props) {
@@ -100,7 +164,13 @@ export function DetailDrawer({
 
   const portStrip =
     switchPorts && switchPorts.length && switchSerial ? (
-      <SwitchPortPanel serial={switchSerial} ports={switchPorts} highlightPortId={highlightPortId} />
+      <SwitchPortPanel
+        serial={switchSerial}
+        ports={switchPorts}
+        highlightPortId={highlightPortId}
+        peersByPort={peersByPort}
+        onPortClick={onPortClick}
+      />
     ) : null;
 
   if (node) {
@@ -123,10 +193,87 @@ export function DetailDrawer({
             <span className={`health-pill ${node.health.state}`}>{node.health.state}</span>
           </div>
           <div className="d-name">{node.hostname || node.label}</div>
-          <div className="d-ip">{node.management_ip || "—"}</div>
+          <div className="d-ip">{node.platform || node.subtype}</div>
+          <div className="d-ip">{String(node.metadata?.status || node.health.state)}</div>
         </div>
         <div className="d-body">
+          {node.type === "group" && onExpandGroup && (
+            <button type="button" className="fix-btn" onClick={() => onExpandGroup(node.id)}>
+              Show {String(node.metadata?.count || "")} clients
+            </button>
+          )}
+          {onTrace && node.type !== "group" && (
+            <button type="button" className="fix-btn ghost" onClick={() => onTrace(node.id)}>
+              Trace to Internet
+            </button>
+          )}
+          {traceHops && traceHops.length > 0 && (
+            <ol className="trace-hops">
+              {traceHops.map((h, i) => (
+                <li key={`${h.nodeId}-${i}`}>
+                  {h.via ? <span className="trace-via">{h.via}</span> : null}
+                  <button type="button" className="trace-node" onClick={() => h.nodeId !== "internet" && onGoto(h.nodeId)}>
+                    {h.label}
+                  </button>
+                </li>
+              ))}
+            </ol>
+          )}
           {portStrip}
+          <div className="d-sub">
+            <span className="bar" />
+            <span className="t">Management</span>
+          </div>
+          <div className="d-grid">
+            <Cell k="IP" v={node.management_ip} />
+            <Cell k="Firmware" v={members[0]?.software_version || node.software_version} hideEmpty />
+            <Cell k="Serial" v={members[0]?.serial_number || node.serial} hideEmpty />
+          </div>
+          {switchPorts && switchPorts.length > 0 && (
+            <>
+              <div className="d-sub">
+                <span className="bar" />
+                <span className="t">Operations</span>
+              </div>
+              <div className="ops-grid">
+                {(() => {
+                  const ops = switchOps(switchPorts, node, graph);
+                  return (
+                    <>
+                      <div className="ops-cell">
+                        <b>{ops.connected}</b>
+                        <span>connected</span>
+                      </div>
+                      <div className="ops-cell">
+                        <b>{ops.poe}</b>
+                        <span>PoE</span>
+                      </div>
+                      <div className="ops-cell">
+                        <b>{ops.trunks}</b>
+                        <span>trunks</span>
+                      </div>
+                      <div className="ops-cell">
+                        <b>{ops.warning}</b>
+                        <span>port warnings</span>
+                      </div>
+                      <div className="ops-cell">
+                        <b>{ops.clients}</b>
+                        <span>clients</span>
+                      </div>
+                      <div className="ops-cell">
+                        <b>{ops.critical}</b>
+                        <span>critical</span>
+                      </div>
+                      <div className="ops-cell">
+                        <b>{ops.warnings}</b>
+                        <span>warnings</span>
+                      </div>
+                    </>
+                  );
+                })()}
+              </div>
+            </>
+          )}
           <div className="d-sub">
             <span className="bar" />
             <span className="t">Details</span>
@@ -313,12 +460,8 @@ export function DetailDrawer({
           <span className="t">Link</span>
         </div>
         <div className="d-grid">
+          <Cell k="Confidence" v={(link!.confidence || describeLinkEvidence(link!).confidence).toUpperCase()} />
           <Cell k="Discovery" v={link!.discovery_method} />
-          <Cell
-            k="Discovery sources"
-            v={(link!.discovery_sources || []).join(", ")}
-            hideEmpty
-          />
           <Cell k="Role" v={link!.interface_role} hideEmpty />
           <Cell k="Source device" v={src.serial} />
           <Cell k="Source port" v={src.portId} />
@@ -327,27 +470,27 @@ export function DetailDrawer({
           <Cell k="Client count (through port)" v={src.clientCount} hideEmpty />
           <Cell k="Source IP" v={link!.source_management_ip} hideEmpty />
           <Cell k="Target IP" v={link!.target_management_ip} hideEmpty />
-          <Cell k="Source platform" v={link!.source_platform} hideEmpty />
-          <Cell k="Target platform" v={link!.target_platform} hideEmpty />
         </div>
-        {Object.keys(link!.identity_resolution || {}).length > 0 && (
-          <>
-            <div className="d-sub">
-              <span className="bar" />
-              <span className="t">Identity resolution</span>
-            </div>
-            <div className="d-grid">
-              {Object.entries(link!.identity_resolution || {}).map(([key, value]) => (
-                <Cell
-                  key={key}
-                  k={key}
-                  v={typeof value === "object" ? JSON.stringify(value) : value}
-                  hideEmpty
-                />
-              ))}
-            </div>
-          </>
-        )}
+        {(() => {
+          const ev = describeLinkEvidence(link!);
+          return (
+            <>
+              <div className="d-sub">
+                <span className="bar" />
+                <span className="t">Evidence</span>
+                <span className={`n conf-${ev.confidence}`}>{ev.confidence}</span>
+              </div>
+              <p className="merge-help">{ev.summary}</p>
+              <ul className="evidence-list">
+                {ev.items.map((item) => (
+                  <li key={item.key} className={item.ok ? "ok" : "miss"}>
+                    {item.ok ? "✓" : "○"} {item.label}
+                  </li>
+                ))}
+              </ul>
+            </>
+          );
+        })()}
         <div className="d-sub">
           <span className="bar" />
           <span className="t">Source port</span>

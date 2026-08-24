@@ -206,6 +206,49 @@ export function Sidebar({
         <div className="section">
           <div className="sec-head">
             <span className="bar" />
+            <span className="sec-title">View</span>
+          </div>
+          <div className="seg vis-stack">
+            <button
+              type="button"
+              className={prefs.visibilityMode === "physical" ? "on" : ""}
+              title="Firewall, switch, AP, camera, server, NAS, Pi"
+              onClick={() => setPrefs({ visibilityMode: "physical", expandedGroups: [] })}
+            >
+              Physical
+            </button>
+            <button
+              type="button"
+              className={prefs.visibilityMode === "physical_clients" ? "on" : ""}
+              title="Physical devices plus wired and wireless clients"
+              onClick={() => setPrefs({ visibilityMode: "physical_clients" })}
+            >
+              Physical + Clients
+            </button>
+            <button
+              type="button"
+              className={prefs.visibilityMode === "full" ? "on" : ""}
+              title="Everything including inferred WAN and unmanaged neighbors"
+              onClick={() => setPrefs({ visibilityMode: "full" })}
+            >
+              Full
+            </button>
+          </div>
+          <ToggleRow
+            label="Collapse wireless clients"
+            on={prefs.collapseWireless}
+            onToggle={() => setPrefs({ collapseWireless: !prefs.collapseWireless, expandedGroups: [] })}
+          />
+          <ToggleRow
+            label="Collapse downstream clients"
+            on={prefs.collapseDownstream}
+            onToggle={() => setPrefs({ collapseDownstream: !prefs.collapseDownstream, expandedGroups: [] })}
+          />
+        </div>
+
+        <div className="section">
+          <div className="sec-head">
+            <span className="bar" />
             <span className="sec-title">Display</span>
           </div>
           <ToggleRow label="All node labels" on={prefs.allLabels} onToggle={() => setPrefs({ allLabels: !prefs.allLabels })} />

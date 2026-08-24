@@ -225,7 +225,15 @@ Stored in `backend/data/audit_log.json`.
 
 ## Filters and map controls
 
-The topology toolbar supports:
+The sidebar supports three visibility modes:
+
+- **Physical** — firewall, switch, AP, camera, server, NAS, and Pi chassis only
+- **Physical + Clients** — physical devices plus wired and wireless endpoints (default). Dense wireless and downstream VM leaves collapse to a single group such as `24 Wireless Clients` until you expand them
+- **Full** — inferred WAN CPE and other unmanaged neighbors as well
+
+Tree view defaults to collapsed client groups. Selecting a switch opens a physical port strip (connected / unused / down, PoE, access/trunk, VLAN, speed, client count, peer). Click a jack to highlight that port's topology branch. Right-click a node or use **Trace to Internet** to fade everything except the path to the MX/WAN. Physical links show confidence plus an evidence checklist (linkLayer, LLDP, deviceMac, switch port status, client history).
+
+Other topology filters:
 - Search by device label/serial/model/MAC/IP/port metadata
 - Mismatches only
 - Show wireless links

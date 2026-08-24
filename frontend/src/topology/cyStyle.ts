@@ -35,6 +35,11 @@ export function buildCyStyle(isDark: boolean): StylesheetJson {
         "text-max-width": "120px",
         "min-zoomed-font-size": 7,
         "z-index": 10,
+        shape: "ellipse",
+        "background-image": "data(healthDot)",
+        "background-fit": "contain",
+        "background-clip": "none",
+        "background-repeat": "no-repeat",
         "transition-property": "opacity,border-color,border-width",
         "transition-duration": 150,
       },
@@ -57,23 +62,35 @@ export function buildCyStyle(isDark: boolean): StylesheetJson {
       style: { "text-opacity": 0 },
     },
     { selector: ".showlabel", style: { "text-opacity": 1 } },
+    { selector: "node[isGroup = 1]", style: { "text-opacity": 1, "font-size": 9, "font-weight": 600, "text-max-width": "140px", shape: "round-rectangle" } },
     {
       selector: "edge",
       style: {
-        width: 1,
+        width: 1.4,
         "line-color": edgeColor,
-        opacity: isDark ? 0.4 : 0.65,
+        opacity: isDark ? 0.45 : 0.7,
         "curve-style": "bezier",
         "control-point-step-size": 18,
-        "overlay-padding": 8,
+        "overlay-padding": 10,
         "overlay-opacity": 0,
+        "overlay-color": "#9da9ff",
+        "z-index": 20,
+        events: "yes",
         "transition-property": "opacity,line-color,width",
         "transition-duration": 150,
       },
     },
     {
+      selector: 'edge[linkType="wired"], edge[linkType="discovered_partial"]',
+      style: { "z-index": 30, "overlay-padding": 12 },
+    },
+    {
       selector: 'edge[linkType="wireless"]',
-      style: { "line-style": "dashed", width: 1.2 },
+      style: { "line-style": "dashed", width: 1.2, "z-index": 5, "overlay-padding": 4 },
+    },
+    {
+      selector: 'edge[kind="uplink"]',
+      style: { width: 2.2, "z-index": 40, "overlay-padding": 14, opacity: isDark ? 0.7 : 0.85 },
     },
     {
       selector: 'edge[health="warning"]',
@@ -120,16 +137,16 @@ export function buildCyStyle(isDark: boolean): StylesheetJson {
       style: { "line-color": "#ffffff", opacity: 1, width: 3, "z-index": 95 },
     },
     {
+      selector: "edge.trace",
+      style: { "line-color": "#7ee0c3", opacity: 1, width: 3.2, "z-index": 96 },
+    },
+    {
+      selector: "node.trace",
+      style: { "border-color": "#7ee0c3", "border-width": 3, "text-opacity": 1, "z-index": 97 },
+    },
+    {
       selector: ".faded",
-      style: { opacity: isDark ? 0.25 : 0.5, "text-opacity": 0 },
-    },
-    {
-      selector: 'node[health="critical"]',
-      style: { "border-color": "#dc3146", "border-width": 3 },
-    },
-    {
-      selector: 'node[health="warning"]',
-      style: { "border-color": "#fac22b", "border-width": 2.6 },
+      style: { opacity: isDark ? 0.22 : 0.42, "text-opacity": 0 },
     },
   ];
 }

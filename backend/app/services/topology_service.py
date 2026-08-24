@@ -479,6 +479,17 @@ class TopologyService:
         networks = await self.meraki.get_organization_networks(org_id)
         devices = await self.meraki.get_network_devices(network_id)
         try:
+            org_devices = await self.meraki.get_organization_devices(org_id, network_id)
+        except MerakiAPIError as exc:
+            logger.warning("Organization inventory failed for %s: %s", org_id, exc)
+            org_devices = []
+        by_serial = {str(d.get("serial") or ""): d for d in devices if d.get("serial")}
+        for extra in org_devices:
+            serial = str(extra.get("serial") or "")
+            if serial and serial not in by_serial:
+                by_serial[serial] = extra
+        devices = list(by_serial.values())
+        try:
             topology = await self.meraki.get_network_topology(network_id)
         except MerakiAPIError as exc:
             logger.warning("Topology endpoint failed for network %s: %s", network_id, exc)

@@ -26,12 +26,18 @@ function electCoreIds(nodes: TopologyNode[]): Set<string> {
   return new Set(switches.filter((n) => (n.degree || 0) === top && top > 0).map((n) => n.id));
 }
 
+function healthDotUri(opState: string): string {
+  const color = opState === "offline" ? "#8b8d97" : opState === "critical" ? "#dc3146" : opState === "warning" ? "#fac22b" : "#3dd68c";
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32"><circle cx="26" cy="6" r="5.2" fill="${color}" stroke="#101219" stroke-width="1.6"/></svg>`;
+  return `data:image/svg+xml;utf8,${encodeURIComponent(svg)}`;
+}
+
 export function buildCyElements(graph: TopologyGraph): ElementDefinition[] {
   const coreIds = electCoreIds(graph.nodes);
   const elements: ElementDefinition[] = [];
 
   for (const node of graph.nodes) {
-    const deviceClass = classifyNode(node, coreIds);
+    const deviceClass = node.type === "group" ? "client" : classifyNode(node, coreIds);
     const vis = classVisuals(deviceClass);
     const members = (node.stack_members || []).map((m) => ({
       member: m.id,
@@ -39,6 +45,8 @@ export function buildCyElements(graph: TopologyGraph): ElementDefinition[] {
       serial_number: m.serial_number || "—",
       software_version: m.software_version || "—",
     }));
+    const status = String(node.metadata?.status || "").toLowerCase();
+    const opState = status === "offline" || status === "dormant" ? "offline" : node.health?.state || "healthy";
     elements.push({
       group: "nodes",
       data: {
@@ -46,7 +54,7 @@ export function buildCyElements(graph: TopologyGraph): ElementDefinition[] {
         label: node.hostname || node.label || node.id,
         type: deviceClass,
         color: vis.color,
-        size: vis.size,
+        size: node.type === "group" ? Math.max(vis.size, 36) : vis.size,
         ip: node.management_ip || "—",
         platform: node.platform || "—",
         deg: node.degree || 0,
@@ -55,11 +63,13 @@ export function buildCyElements(graph: TopologyGraph): ElementDefinition[] {
         serial: node.serial || "—",
         sw_version: node.software_version || "—",
         members,
-        health: node.health?.state || "healthy",
+        health: opState,
         issue_count: node.issue_count || 0,
         managed: node.managed,
         subtype: node.subtype,
-        linkTypeHint: "",
+        healthDot: healthDotUri(opState),
+        memberIds: node.type === "group" ? node.metadata?.member_ids || [] : [],
+        isGroup: node.type === "group" ? 1 : 0,
       },
     });
   }
@@ -68,6 +78,7 @@ export function buildCyElements(graph: TopologyGraph): ElementDefinition[] {
     const st = asDeviceClass(link.source_device_class || classifyNode(nodeOf(graph, link.source), coreIds));
     const tt = asDeviceClass(link.target_device_class || classifyNode(nodeOf(graph, link.target), coreIds));
     const backbone = st === "core" || tt === "core" || st === "mx" || tt === "mx";
+    const physicalUplink = link.link_type === "wired" && (st === "ap" || tt === "ap" || st === "mv" || tt === "mv");
     elements.push({
       group: "edges",
       data: {
@@ -76,10 +87,11 @@ export function buildCyElements(graph: TopologyGraph): ElementDefinition[] {
         target: link.target,
         sourceIf: edgeIface(link, "source"),
         targetIf: edgeIface(link, "target"),
-        kind: backbone ? "backbone" : "edge",
+        kind: backbone ? "backbone" : physicalUplink ? "uplink" : "edge",
         linkType: link.link_type,
         health: link.health,
         discovery: link.discovery_method,
+        selectable: true,
       },
     });
   }
