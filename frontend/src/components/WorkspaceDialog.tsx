@@ -12,13 +12,13 @@ interface Props {
 
 export function WorkspaceDialog({ open, title, submitLabel, nameLabel = "Name", showScope, onClose, onSubmit }: Props) {
   const [name, setName] = React.useState("");
-  const [shared, setShared] = React.useState(true);
+  const [shared, setShared] = React.useState(false);
   const [starred, setStarred] = React.useState(false);
 
   React.useEffect(() => {
     if (open) {
       setName("");
-      setShared(true);
+      setShared(false);
       setStarred(false);
     }
   }, [open]);
@@ -33,14 +33,17 @@ export function WorkspaceDialog({ open, title, submitLabel, nameLabel = "Name", 
           <input autoFocus value={name} onChange={(e) => setName(e.target.value)} placeholder="Server Infrastructure" />
         </label>
         {showScope && (
-          <div className="ws-scope">
-            <button type="button" className={!shared ? "on" : ""} onClick={() => setShared(false)}>
-              Personal
-            </button>
-            <button type="button" className={shared ? "on" : ""} onClick={() => setShared(true)}>
-              Shared
-            </button>
-          </div>
+          <>
+            <div className="ws-scope">
+              <button type="button" className={!shared ? "on" : ""} onClick={() => setShared(false)}>
+                Personal
+              </button>
+              <button type="button" className={shared ? "on" : ""} onClick={() => setShared(true)}>
+                Shared
+              </button>
+            </div>
+            <div className="ws-hint">{shared ? "Stored on the server for everyone on this network." : "Stored in this browser only."}</div>
+          </>
         )}
         {showScope && (
           <label className="ws-check">

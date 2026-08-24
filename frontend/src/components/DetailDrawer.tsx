@@ -147,8 +147,8 @@ export function DetailDrawer({
   graph,
   mergeCandidates,
   onMerge,
-  learnedByPort,
-  changesByPort,
+  learnedByPort = {},
+  changesByPort = {},
 }: Props) {
   const [mergeId, setMergeId] = React.useState("");
   const [mergeLabel, setMergeLabel] = React.useState("");

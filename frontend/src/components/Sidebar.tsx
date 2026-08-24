@@ -155,11 +155,15 @@ export function Sidebar({
   onCreateGroup,
   onShowAll,
 }: Props) {
-  const hiddenTypes = new Set(prefs.hiddenTypes);
-  const hiddenPlat = new Set(prefs.platforms);
-  const hiddenFw = new Set(prefs.firmware);
+  const hits = searchHits || [];
+  const changeList = changes || [];
+  const viewList = views || [];
+  const groupList = groups || [];
+  const hiddenTypes = new Set(prefs.hiddenTypes || []);
+  const hiddenPlat = new Set(prefs.platforms || []);
+  const hiddenFw = new Set(prefs.firmware || []);
   const filtersActive =
-    prefs.hiddenTypes.length + prefs.platforms.length + prefs.firmware.length > 0 ||
+    (prefs.hiddenTypes || []).length + (prefs.platforms || []).length + (prefs.firmware || []).length > 0 ||
     prefs.wiredOnly ||
     prefs.wirelessOnly ||
     prefs.unmanagedOnly ||
@@ -215,10 +219,10 @@ export function Sidebar({
               </div>
             )}
             <div id="results" className={searchOpen ? "on" : ""}>
-              {searchHits.length === 0 && search ? (
+              {hits.length === 0 && search ? (
                 <div className="res-empty">No matching device</div>
               ) : (
-                searchHits.map((hit) => (
+                hits.map((hit) => (
                   <div key={hit.id} className="res-item" onClick={() => onPickSearch(hit.id)}>
                     <span className="res-dot" style={{ background: hit.color }} />
                     <span className="res-name">{hit.label}</span>
@@ -243,10 +247,10 @@ export function Sidebar({
             ))}
           </div>
           <div className="chg-list">
-            {changes.length === 0 ? (
+            {changeList.length === 0 ? (
               <div className="chg-empty">No topology changes in this window.</div>
             ) : (
-              changes.map((change) => (
+              changeList.map((change) => (
                 <button type="button" key={change.id} className={`chg-item sev-${change.severity || "info"}`} onClick={() => onPickChange(change)}>
                   <span className="chg-time">{formatChangeTime(change.at)}</span>
                   <span className="chg-sum">{change.summary}</span>
@@ -286,8 +290,8 @@ export function Sidebar({
             <span className="sec-title">Saved views</span>
           </div>
           <div className="view-list">
-            {views.length === 0 && <div className="chg-empty">No saved views yet.</div>}
-            {views.map((view) => (
+            {viewList.length === 0 && <div className="chg-empty">No saved views yet.</div>}
+            {viewList.map((view) => (
               <div key={view.id} className={`view-item${activeViewId === view.id ? " on" : ""}`}>
                 <button type="button" className="view-star" title={view.starred ? "Unstar" : "Star"} onClick={() => onStarView(view)}>
                   {view.starred ? "★" : "☆"}
@@ -310,11 +314,11 @@ export function Sidebar({
             <span className="sec-title">Groups</span>
           </div>
           <div className="view-list">
-            {groups.length === 0 && <div className="chg-empty">No logical groups yet.</div>}
-            {groups.map((group) => (
+            {groupList.length === 0 && <div className="chg-empty">No logical groups yet.</div>}
+            {groupList.map((group) => (
               <button type="button" key={group.id} className="view-name group-btn" onClick={() => onApplyGroup(group)}>
                 {group.name}
-                <span className="view-tag">{group.member_ids.length}</span>
+                <span className="view-tag">{(group.member_ids || []).length}</span>
               </button>
             ))}
           </div>

@@ -109,6 +109,8 @@ export const CytoscapeStage = React.forwardRef<StageHandle, Props>(function Cyto
   const boxingRef = React.useRef(false);
   const pendingSelect = React.useRef<string | null>(null);
   const pendingFocus = React.useRef<{ nodeIds: string[]; linkIds: string[] } | null>(null);
+  const marqueeRef = React.useRef<{ x0: number; y0: number; additive: boolean } | null>(null);
+  const [marquee, setMarquee] = React.useState<{ left: number; top: number; width: number; height: number } | null>(null);
 
   const presented = React.useMemo(() => {
     if (!graph) return null;
@@ -525,8 +527,9 @@ export const CytoscapeStage = React.forwardRef<StageHandle, Props>(function Cyto
 
   React.useEffect(() => {
     if (!containerRef.current) return;
+    const host = containerRef.current;
     const cy = cytoscape({
-      container: containerRef.current,
+      container: host,
       elements: [],
       wheelSensitivity: 1,
       minZoom: 0.12,
@@ -535,8 +538,11 @@ export const CytoscapeStage = React.forwardRef<StageHandle, Props>(function Cyto
       boxSelectionEnabled: true,
       selectionType: "additive",
       userPanningEnabled: false,
+      panningEnabled: true,
     });
     cyRef.current = cy;
+    cy.userPanningEnabled(false);
+    cy.boxSelectionEnabled(true);
     applyCyTheme(cy, document.documentElement.getAttribute("data-theme") !== "light");
 
     cy.on("tap", "node", (e: EventObject) => {
@@ -565,6 +571,76 @@ export const CytoscapeStage = React.forwardRef<StageHandle, Props>(function Cyto
       }, 0);
       if (ids.length) paintMultiRef.current(ids);
     });
+
+    const onDown = (ev: MouseEvent) => {
+      if (ev.button !== 0 || !host) return;
+      const live = cyRef.current;
+      if (!live) return;
+      const rect = host.getBoundingClientRect();
+      const rp = { x: ev.clientX - rect.left, y: ev.clientY - rect.top };
+      const overNode = live.nodes(":visible").some((n) => {
+        const bb = n.renderedBoundingBox({ includeLabels: false });
+        return rp.x >= bb.x1 && rp.x <= bb.x2 && rp.y >= bb.y1 && rp.y <= bb.y2;
+      });
+      if (overNode) return;
+      boxingRef.current = true;
+      marqueeRef.current = { x0: rp.x, y0: rp.y, additive: ev.ctrlKey || ev.metaKey || ev.shiftKey };
+      setMarquee({ left: rp.x, top: rp.y, width: 0, height: 0 });
+    };
+    const onMove = (ev: MouseEvent) => {
+      const start = marqueeRef.current;
+      if (!start || !host) return;
+      const rect = host.getBoundingClientRect();
+      const x = ev.clientX - rect.left;
+      const y = ev.clientY - rect.top;
+      setMarquee({
+        left: Math.min(start.x0, x),
+        top: Math.min(start.y0, y),
+        width: Math.abs(x - start.x0),
+        height: Math.abs(y - start.y0),
+      });
+    };
+    const onUp = (ev: MouseEvent) => {
+      const start = marqueeRef.current;
+      if (!start || !host) return;
+      const live = cyRef.current;
+      const rect = host.getBoundingClientRect();
+      const x = ev.clientX - rect.left;
+      const y = ev.clientY - rect.top;
+      const box = {
+        left: Math.min(start.x0, x),
+        top: Math.min(start.y0, y),
+        width: Math.abs(x - start.x0),
+        height: Math.abs(y - start.y0),
+      };
+      marqueeRef.current = null;
+      setMarquee(null);
+      window.setTimeout(() => {
+        boxingRef.current = false;
+      }, 0);
+      if (!live) return;
+      if (box.width < 5 && box.height < 5) {
+        if (!start.additive) clearSelRef.current(live);
+        return;
+      }
+      const ids = live
+        .nodes(":visible")
+        .filter((n) => {
+          const bb = n.renderedBoundingBox({ includeLabels: false });
+          return !(bb.x2 < box.left || bb.x1 > box.left + box.width || bb.y2 < box.top || bb.y1 > box.top + box.height);
+        })
+        .map((n) => n.id());
+      if (start.additive) {
+        paintMultiRef.current([...new Set([...selectedIdsRef.current, ...ids])]);
+      } else if (ids.length) {
+        paintMultiRef.current(ids);
+      } else {
+        clearSelRef.current(live);
+      }
+    };
+    host.addEventListener("mousedown", onDown, true);
+    window.addEventListener("mousemove", onMove);
+    window.addEventListener("mouseup", onUp);
     cy.on("cxttap", "node", (e: EventObject) => {
       const orig = e.originalEvent as MouseEvent | undefined;
       if (orig?.preventDefault) orig.preventDefault();
@@ -606,6 +682,9 @@ export const CytoscapeStage = React.forwardRef<StageHandle, Props>(function Cyto
     });
 
     return () => {
+      host.removeEventListener("mousedown", onDown, true);
+      window.removeEventListener("mousemove", onMove);
+      window.removeEventListener("mouseup", onUp);
       cy.destroy();
       cyRef.current = null;
     };
@@ -624,6 +703,8 @@ export const CytoscapeStage = React.forwardRef<StageHandle, Props>(function Cyto
     cy.add(buildCyElements(presented));
     applyCyTheme(cy, prefs.theme !== "light");
     applyFilters(cy);
+    cy.userPanningEnabled(false);
+    cy.boxSelectionEnabled(true);
 
     const saved = graph.nodes.filter((n) => n.position && (n.position.x || n.position.y));
     const useSaved = saved.length > graph.nodes.length * 0.5 && presented.nodes.length === graph.nodes.length;
@@ -791,6 +872,12 @@ export const CytoscapeStage = React.forwardRef<StageHandle, Props>(function Cyto
   return (
     <main id="stage">
       <div id="cy" ref={containerRef} onContextMenu={(e) => e.preventDefault()} />
+      {marquee && marquee.width + marquee.height > 0 && (
+        <div
+          className="cy-marquee"
+          style={{ left: marquee.left, top: marquee.top, width: marquee.width, height: marquee.height }}
+        />
+      )}
       {!hasGraph && (
         <div id="import-state" className="show">
           <Icon name="search" />
@@ -915,8 +1002,8 @@ export const CytoscapeStage = React.forwardRef<StageHandle, Props>(function Cyto
         graph={graph}
         mergeCandidates={mergeCandidates}
         onMerge={onMerge}
-        learnedByPort={learnedByPort}
-        changesByPort={changesByPort}
+        learnedByPort={learnedByPort || {}}
+        changesByPort={changesByPort || {}}
       />
       )}
     </main>
