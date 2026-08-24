@@ -18,7 +18,7 @@ uvicorn backend.app.main:app --host 0.0.0.0 --port 8000 --reload
 ```bash
 cd frontend
 npm install
-npm run dev        # Hot-reload dev server on port 3000
+npm run dev        # Hot-reload dev server (FRONTEND_PORT, default 43123)
 npm run build      # TypeScript check + Vite production build
 ```
 
@@ -67,7 +67,7 @@ Copy `.env.example` to `.env`. Required variables:
 Frontend also needs `frontend/.env`:
 ```
 VITE_API_BASE_URL=http://localhost:8000
-FRONTEND_PORT=3000
+FRONTEND_PORT=43123
 ```
 
 `MERAKI_API_KEY` is backend-only and must never appear in frontend code.
@@ -122,7 +122,7 @@ All state lives in `main.tsx` (org/network selection, topology data, filter stat
 - `Filters.tsx` — search box + mismatch/wireless toggle controls
 - `DetailsPanel.tsx` — right-side panel showing selected node/link details and issue list
 - `RemediationModal.tsx` — confirmation modal with before/after config diff before applying a fix
-- React Flow renders the interactive topology canvas; custom node/edge types are defined inline in `main.tsx`
+- Cytoscape + fCoSE render the interactive topology canvas (`frontend/src/components/CytoscapeStage.tsx`) using a unified TopologyGraph
 - `frontend/src/types/topology.ts` — TypeScript types mirroring the backend Pydantic schemas above
 
 ### Data Persistence

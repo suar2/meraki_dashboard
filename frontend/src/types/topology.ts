@@ -1,4 +1,16 @@
 export type Severity = "critical" | "warning" | "info";
+export type DeviceClass =
+  | "core"
+  | "access"
+  | "wlc"
+  | "mx"
+  | "ap"
+  | "mv"
+  | "mg"
+  | "phone"
+  | "client"
+  | "unmanaged"
+  | "unknown";
 
 export interface Issue {
   id: string;
@@ -23,6 +35,19 @@ export interface RemediationAction {
   requires_confirmation: boolean;
 }
 
+export interface StackMember {
+  id: number;
+  role?: string;
+  serial_number: string;
+  software_version: string;
+}
+
+export interface NodeHealth {
+  state: "healthy" | "warning" | "critical";
+  critical_count: number;
+  warning_count: number;
+}
+
 export interface TopologyNode {
   id: string;
   type: string;
@@ -31,9 +56,19 @@ export interface TopologyNode {
   managed: boolean;
   metadata: Record<string, unknown>;
   network: Record<string, unknown>;
-  health: { state: "healthy" | "warning" | "critical"; critical_count: number; warning_count: number };
+  health: NodeHealth;
   issue_count: number;
   position: { x: number; y: number };
+  hostname: string;
+  management_ip: string;
+  platform: string;
+  location: string;
+  software_version: string;
+  serial: string;
+  stack_members: StackMember[];
+  device_class: DeviceClass | string;
+  degree: number;
+  interfaces: string[];
 }
 
 export interface TopologyLink {
@@ -49,10 +84,20 @@ export interface TopologyLink {
   faults: Issue[];
   remediable_actions: RemediationAction[];
   last_seen?: string;
+  source_hostname: string;
+  target_hostname: string;
+  source_interface: string;
+  target_interface: string;
+  source_management_ip: string;
+  target_management_ip: string;
+  source_platform: string;
+  target_platform: string;
+  source_device_class: string;
+  target_device_class: string;
 }
 
 export interface TopologyGraph {
-  organization: { id: string };
+  organization: { id: string; name?: string };
   network: { id: string; name: string };
   nodes: TopologyNode[];
   links: TopologyLink[];
@@ -69,9 +114,7 @@ export interface TopologyGraph {
     manual_investigation_issues: number;
   };
   generated_at: string;
-  /** device serial -> port rows (config + status + peers) from Meraki switch APIs */
   switch_ports?: Record<string, Array<Record<string, unknown>>>;
-  /** "SERIAL:portNumber" -> raw Meraki client rows */
   clients_by_switch_port?: Record<string, Array<Record<string, unknown>>>;
   port_peer_hints?: Array<Record<string, unknown>>;
   topology_debug?: Record<string, unknown>;

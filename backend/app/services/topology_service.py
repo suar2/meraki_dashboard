@@ -5,7 +5,8 @@ import logging
 from typing import Any
 
 from app.config import settings
-from app.models.schemas import TopologyGraph, TopologyLink, TopologyNode, TopologySummary
+from app.models.schemas import StackMember, TopologyGraph, TopologyLink, TopologyNode, TopologySummary
+from app.services.device_class import classify_device, elect_core_switch_ids
 from app.services.layout_service import LayoutService
 from app.services.meraki_client import MerakiAPIError, MerakiClient
 from app.services.validation_service import ValidationService
@@ -27,7 +28,213 @@ class TopologyService:
         self.store = store
 
     def _cache_name(self, org_id: str, network_id: str) -> str:
-        return f"cache_topology_v4_{org_id}_{network_id}.json"
+        return f"cache_topology_v5_{org_id}_{network_id}.json"
+
+    @staticmethod
+    def _first_str(*values: Any) -> str:
+        for value in values:
+            if value is None:
+                continue
+            text = str(value).strip()
+            if text and text.lower() not in {"none", "unknown", "null"}:
+                return text
+        return ""
+
+    def _node_hostname(self, node: TopologyNode) -> str:
+        meta = node.metadata or {}
+        return self._first_str(
+            node.hostname,
+            meta.get("hostname"),
+            meta.get("name"),
+            meta.get("dhcpHostname"),
+            meta.get("mdnsName"),
+            meta.get("description"),
+            node.label,
+            node.id,
+        )
+
+    def _node_management_ip(self, node: TopologyNode) -> str:
+        meta = node.metadata or {}
+        lldp = self._as_dict(meta.get("lldp"))
+        cdp = self._as_dict(meta.get("cdp"))
+        return self._first_str(
+            node.management_ip,
+            meta.get("lanIp"),
+            meta.get("managementIp"),
+            meta.get("wan1Ip"),
+            meta.get("ip"),
+            meta.get("ipAddress"),
+            lldp.get("managementAddress"),
+            cdp.get("address"),
+            cdp.get("managementAddress"),
+        )
+
+    def _node_platform(self, node: TopologyNode) -> str:
+        meta = node.metadata or {}
+        cdp = self._as_dict(meta.get("cdp"))
+        return self._first_str(
+            node.platform,
+            meta.get("model"),
+            meta.get("productType"),
+            cdp.get("platform"),
+            node.subtype,
+        )
+
+    def _node_serial(self, node: TopologyNode) -> str:
+        meta = node.metadata or {}
+        if node.managed:
+            return self._first_str(node.serial, meta.get("serial"), node.id)
+        return self._first_str(node.serial, meta.get("serial"))
+
+    def _node_firmware(self, node: TopologyNode) -> str:
+        meta = node.metadata or {}
+        return self._first_str(
+            node.software_version,
+            meta.get("firmware"),
+            meta.get("software_version"),
+            meta.get("os"),
+        )
+
+    def _node_interfaces(self, node: TopologyNode, links: list[TopologyLink]) -> list[str]:
+        ifaces: list[str] = []
+        seen: set[str] = set()
+
+        def add(value: Any) -> None:
+            text = str(value or "").strip()
+            if not text or text.lower() in {"unknown", "none"} or text in seen:
+                return
+            seen.add(text)
+            ifaces.append(text)
+
+        for entry in node.metadata.get("connected_interfaces") or []:
+            if isinstance(entry, dict):
+                add(entry.get("portId"))
+        for link in links:
+            if link.source == node.id:
+                add((link.source_port or {}).get("portId"))
+            elif link.target == node.id:
+                add((link.target_port or {}).get("portId"))
+        return ifaces
+
+    def _enrich_graph(
+        self,
+        nodes: list[TopologyNode],
+        links: list[TopologyLink],
+        network: dict[str, Any],
+        stacks: list[dict[str, Any]] | None = None,
+    ) -> None:
+        """Stamp Packet Express inventory/adjacency fields onto the unified graph."""
+        location = self._first_str(network.get("name"), network.get("id"))
+        degree: dict[str, int] = {n.id: 0 for n in nodes}
+        for link in links:
+            if link.source in degree:
+                degree[link.source] += 1
+            if link.target in degree:
+                degree[link.target] += 1
+
+        election_payload = []
+        for node in nodes:
+            meta = node.metadata or {}
+            election_payload.append(
+                {
+                    "id": node.id,
+                    "subtype": node.subtype,
+                    "product_type": meta.get("productType"),
+                    "platform": self._node_platform(node),
+                    "hostname": self._node_hostname(node),
+                    "label": node.label,
+                    "name": meta.get("name"),
+                    "model": meta.get("model"),
+                }
+            )
+        core_ids = elect_core_switch_ids(election_payload, degree)
+
+        stack_by_serial: dict[str, list[StackMember]] = {}
+        firmware_by_serial = {n.id: self._node_firmware(n) for n in nodes}
+        for stack in stacks or []:
+            serials = [str(s) for s in (stack.get("serials") or []) if s]
+            members: list[StackMember] = []
+            for idx, serial in enumerate(serials, start=1):
+                members.append(
+                    StackMember(
+                        id=idx,
+                        role=str(stack.get("name") or ""),
+                        serial_number=serial,
+                        software_version=firmware_by_serial.get(serial, ""),
+                    )
+                )
+            for serial in serials:
+                stack_by_serial[serial] = members
+
+        node_by_id = {n.id: n for n in nodes}
+        for node in nodes:
+            hostname = self._node_hostname(node)
+            platform = self._node_platform(node)
+            product_type = str((node.metadata or {}).get("productType") or "")
+            node.hostname = hostname
+            node.management_ip = self._node_management_ip(node)
+            node.platform = platform
+            node.location = self._first_str(node.location, location)
+            node.software_version = self._node_firmware(node)
+            node.serial = self._node_serial(node)
+            node.degree = degree.get(node.id, 0)
+            node.interfaces = self._node_interfaces(node, links)
+            node.device_class = classify_device(
+                hostname=hostname,
+                platform=platform,
+                product_type=product_type,
+                subtype=node.subtype,
+                node_type=node.type,
+                managed=node.managed,
+                is_core_switch=node.id in core_ids,
+            )
+            if node.id in stack_by_serial:
+                node.stack_members = stack_by_serial[node.id]
+            elif not node.stack_members:
+                serial = node.serial or "—"
+                firmware = node.software_version or "—"
+                node.stack_members = [
+                    StackMember(id=1, role="", serial_number=serial, software_version=firmware)
+                ]
+
+        for node in nodes:
+            crit = 0
+            warn = 0
+            for link in links:
+                if link.source != node.id and link.target != node.id:
+                    continue
+                for issue in [*link.mismatches, *link.faults]:
+                    if issue.severity == "critical":
+                        crit += 1
+                    elif issue.severity == "warning":
+                        warn += 1
+            node.health.critical_count = crit
+            node.health.warning_count = warn
+            node.issue_count = crit + warn
+            if crit:
+                node.health.state = "critical"
+            elif warn:
+                node.health.state = "warning"
+            else:
+                node.health.state = "healthy"
+
+        for link in links:
+            src = node_by_id.get(link.source)
+            tgt = node_by_id.get(link.target)
+            link.source_hostname = src.hostname if src else link.source
+            link.target_hostname = tgt.hostname if tgt else link.target
+            link.source_management_ip = src.management_ip if src else ""
+            link.target_management_ip = tgt.management_ip if tgt else ""
+            link.source_platform = src.platform if src else ""
+            link.target_platform = tgt.platform if tgt else ""
+            link.source_device_class = src.device_class if src else ""
+            link.target_device_class = tgt.device_class if tgt else ""
+            link.source_interface = self._first_str(
+                link.source_interface, (link.source_port or {}).get("portId")
+            )
+            link.target_interface = self._first_str(
+                link.target_interface, (link.target_port or {}).get("portId")
+            )
 
     def _load_cache(self, org_id: str, network_id: str) -> TopologyGraph | None:
         cached = self.store.read_json(self._cache_name(org_id, network_id), None)
@@ -299,6 +506,11 @@ class TopologyService:
         except MerakiAPIError as exc:
             logger.warning("Clients endpoint failed for network %s: %s", network_id, exc)
             clients = []
+        try:
+            stacks = await self.meraki.get_network_switch_stacks(network_id)
+        except MerakiAPIError as exc:
+            logger.warning("Switch stacks endpoint failed for network %s: %s", network_id, exc)
+            stacks = []
         network = next((n for n in networks if n["id"] == network_id), {"id": network_id, "name": network_id})
 
         positions = self.layouts.get_positions(org_id, network_id)
@@ -650,6 +862,7 @@ class TopologyService:
             node.metadata["connected_interfaces"] = sorted(interfaces, key=_port_sort_key)
 
         links = self._dedupe_links(links)
+        self._enrich_graph(list(node_map.values()), links, network, stacks)
         switch_ports_cat: dict[str, list[dict[str, Any]]] = {
             s: build_switch_port_catalog(s, ports_by_serial, status_by_serial) for s in switch_serials
         }

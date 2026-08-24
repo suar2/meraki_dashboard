@@ -94,6 +94,13 @@ class MerakiClient:
     async def get_network_clients(self, network_id: str, timespan: int = 3600) -> list[dict[str, Any]]:
         return await self._request("GET", f"/networks/{network_id}/clients", params={"timespan": timespan, "perPage": 1000})
 
+    async def get_network_switch_stacks(self, network_id: str) -> list[dict[str, Any]]:
+        try:
+            return await self._request("GET", f"/networks/{network_id}/switch/stacks")
+        except MerakiAPIError as exc:
+            logger.warning("Switch stacks endpoint failed for network %s: %s", network_id, exc)
+            return []
+
     async def update_switch_port(self, serial: str, port_id: str, payload: dict[str, Any]) -> dict[str, Any]:
         return await self._request("PUT", f"/devices/{serial}/switch/ports/{port_id}", json=payload)
 

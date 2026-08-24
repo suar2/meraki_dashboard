@@ -57,7 +57,7 @@ def start_services() -> None:
     merged_env.update(env_file)
 
     backend_port = int(env_file.get("BACKEND_PORT", "8000"))
-    frontend_port = int(env_file.get("FRONTEND_PORT", "3000"))
+    frontend_port = int(env_file.get("FRONTEND_PORT", "43123"))
 
     npm_cmd = resolve_npm_command()
     if not npm_cmd:

@@ -5,16 +5,18 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "tsc -b && vite build",
+    "build": "tsc --noEmit && vite build",
     "preview": "vite preview"
   },
   "dependencies": {
-    "@xyflow/react": "^12.8.5",
     "axios": "^1.11.0",
+    "cytoscape": "^3.33.1",
+    "cytoscape-fcose": "^2.2.0",
     "react": "^18.3.1",
     "react-dom": "^18.3.1"
   },
   "devDependencies": {
+    "@types/cytoscape": "^3.21.9",
     "@types/react": "^18.3.23",
     "@types/react-dom": "^18.3.7",
     "@babel/core": "^7.26.0",

@@ -3,7 +3,7 @@ import react from "@vitejs/plugin-react";
 
 export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, process.cwd(), "");
-  const frontendPort = Number(process.env.FRONTEND_PORT || env.FRONTEND_PORT || 3300);
+  const frontendPort = Number(process.env.FRONTEND_PORT || env.FRONTEND_PORT || 43123);
   const apiProxyTarget = process.env.VITE_API_PROXY_TARGET || env.VITE_API_PROXY_TARGET || "http://localhost:8000";
   return {
     plugins: [react()],

@@ -15,7 +15,7 @@ class Settings(BaseSettings):
     meraki_base_url: AnyHttpUrl = Field(default="https://api.meraki.com/api/v1", alias="MERAKI_BASE_URL")
     app_env: Literal["development", "production"] = Field(default="development", alias="APP_ENV")
     backend_port: int = Field(default=8000, alias="BACKEND_PORT")
-    frontend_port: int = Field(default=3000, alias="FRONTEND_PORT")
+    frontend_port: int = Field(default=43123, alias="FRONTEND_PORT")
     log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR"] = Field(default="INFO", alias="LOG_LEVEL")
     topology_refresh_seconds: int = Field(default=60, alias="TOPOLOGY_REFRESH_SECONDS")
     data_dir: str = Field(default="./backend/data", alias="DATA_DIR")
@@ -23,7 +23,7 @@ class Settings(BaseSettings):
     max_retries: int = Field(default=3, alias="MAX_RETRIES")
     retry_backoff_seconds: int = Field(default=2, alias="RETRY_BACKOFF_SECONDS")
     secret_key: str = Field(alias="SECRET_KEY")
-    cors_origins: str = Field(default="http://localhost:3000", alias="CORS_ORIGINS")
+    cors_origins: str = Field(default="http://localhost:43123", alias="CORS_ORIGINS")
     cache_ttl_seconds: int = Field(default=60, alias="CACHE_TTL_SECONDS")
 
     @field_validator("meraki_api_key")

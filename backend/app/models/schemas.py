@@ -15,6 +15,13 @@ class NodeHealth(BaseModel):
     warning_count: int = 0
 
 
+class StackMember(BaseModel):
+    id: int
+    role: str = ""
+    serial_number: str = ""
+    software_version: str = ""
+
+
 class TopologyNode(BaseModel):
     id: str
     type: str
@@ -26,6 +33,17 @@ class TopologyNode(BaseModel):
     health: NodeHealth = Field(default_factory=NodeHealth)
     issue_count: int = 0
     position: dict[str, float] = Field(default_factory=lambda: {"x": 0.0, "y": 0.0})
+    # Packet Express inventory fields (first-class; never drop Meraki-only data)
+    hostname: str = ""
+    management_ip: str = ""
+    platform: str = ""
+    location: str = ""
+    software_version: str = ""
+    serial: str = ""
+    stack_members: list[StackMember] = Field(default_factory=list)
+    device_class: str = "unknown"
+    degree: int = 0
+    interfaces: list[str] = Field(default_factory=list)
 
 
 class Issue(BaseModel):
@@ -64,6 +82,17 @@ class TopologyLink(BaseModel):
     faults: list[Issue] = Field(default_factory=list)
     remediable_actions: list[RemediationAction] = Field(default_factory=list)
     last_seen: datetime | None = None
+    # Packet Express adjacency identity (both sides of the CDP/LLDP link)
+    source_hostname: str = ""
+    target_hostname: str = ""
+    source_interface: str = ""
+    target_interface: str = ""
+    source_management_ip: str = ""
+    target_management_ip: str = ""
+    source_platform: str = ""
+    target_platform: str = ""
+    source_device_class: str = ""
+    target_device_class: str = ""
 
 
 class TopologySummary(BaseModel):
