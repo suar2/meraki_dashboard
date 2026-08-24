@@ -33,7 +33,7 @@ class TopologyNode(BaseModel):
     health: NodeHealth = Field(default_factory=NodeHealth)
     issue_count: int = 0
     position: dict[str, float] = Field(default_factory=lambda: {"x": 0.0, "y": 0.0})
-    # Packet Express inventory fields (first-class; never drop Meraki-only data)
+    # Inventory fields (first-class; never drop Meraki-only data)
     hostname: str = ""
     management_ip: str = ""
     platform: str = ""
@@ -82,7 +82,7 @@ class TopologyLink(BaseModel):
     faults: list[Issue] = Field(default_factory=list)
     remediable_actions: list[RemediationAction] = Field(default_factory=list)
     last_seen: datetime | None = None
-    # Packet Express adjacency identity (both sides of the CDP/LLDP link)
+    # Adjacency identity (both sides of the CDP/LLDP link)
     source_hostname: str = ""
     target_hostname: str = ""
     source_interface: str = ""

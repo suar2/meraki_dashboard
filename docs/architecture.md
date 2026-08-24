@@ -17,7 +17,7 @@
 
 ## Frontend layout
 
-- `frontend/src/App.tsx`: Packet Express shell (top bar, sidebar, stage, footer)
+- `frontend/src/App.tsx`: dashboard shell (top bar, sidebar, stage, footer)
 - `frontend/src/components/CytoscapeStage.tsx`: Cytoscape + fCoSE topology renderer, box/multi-select
 - `frontend/src/components/Sidebar.tsx`: search, changes, diagnostics, saved views, groups, filters, Tree/Force
 - `frontend/src/components/DetailDrawer.tsx`: node/link detail + Meraki health/remediation
@@ -25,13 +25,13 @@
 - `frontend/src/components/RemediationModal.tsx`: apply confirmation modal
 - `frontend/src/api/client.ts`: backend API adapter
 - `frontend/src/types/topology.ts`: unified graph contracts
-- `frontend/src/topology/deviceClass.ts`: Packet Express classes extended for MX/MS/MR/MV/MG
+- `frontend/src/topology/deviceClass.ts`: device classes for MX/MS/MR/MV/MG
 - `frontend/src/topology/presentGraph.ts`: visibility, collapse, focus, hide
 - `frontend/src/topology/workspace.ts`: personal/shared saved views and groups
 
 ## Data model summary
 
-- Node: managed/unmanaged entity with Packet Express inventory fields (hostname, management IP, platform, firmware, serial, stack members, device class, degree, interfaces) plus Meraki health/issues/metadata
+- Node: managed/unmanaged entity with inventory fields (hostname, management IP, platform, firmware, serial, stack members, device class, degree, interfaces) plus Meraki health/issues/metadata
 - Link: wired/wireless/discovered adjacency with both-side interface identity, port config/status, mismatches, faults, remediation, confidence, and evidence
 - Issue: classified fault/mismatch with severity/remediable metadata
 - RemediationAction: executable safe change payload with before/after state

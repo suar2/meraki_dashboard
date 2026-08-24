@@ -1,4 +1,4 @@
-@import "./packet-theme.css";
+@import "./meraki-theme.css";
 
 #topbar {
   gap: var(--space-16);

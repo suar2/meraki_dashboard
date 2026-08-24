@@ -150,7 +150,7 @@ class TopologyService:
         network: dict[str, Any],
         stacks: list[dict[str, Any]] | None = None,
     ) -> None:
-        """Stamp Packet Express inventory/adjacency fields onto the unified graph."""
+        """Stamp inventory/adjacency fields onto the unified graph."""
         location = self._first_str(network.get("name"), network.get("id"))
         degree: dict[str, int] = {n.id: 0 for n in nodes}
         for link in links:

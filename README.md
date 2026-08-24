@@ -2,7 +2,7 @@
 
 Production-oriented full-stack dashboard for Cisco Meraki topology visualization, link validation, fault visibility, and safe remediation workflows.
 
-The topology canvas follows the Packet Express Neighbor Explorer experience (Cytoscape + fCoSE, dark-first chrome, category colors, Tree/Force layouts) while Meraki remains the operational source of truth (health, VLANs, mismatches, clients, remediation).
+The topology canvas uses Cytoscape with Tree/Force layouts, dark-first chrome, and category colors. Meraki remains the operational source of truth (health, VLANs, mismatches, clients, remediation).
 
 ## Stack
 
@@ -84,7 +84,7 @@ npm install
 npm run dev
 ```
 
-Open `http://localhost:43123`. Without a Meraki API key, use **Load sample topology** to preview the Packet Express canvas against a unified TopologyGraph fixture.
+Open `http://localhost:43123`. Without a Meraki API key, use **Load sample topology** to preview the canvas against a unified topology fixture.
 
 ## One-command runner (background)
 

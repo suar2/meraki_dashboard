@@ -48,7 +48,7 @@ DEVICE_CLASS_LABELS: dict[DeviceClass, str] = {
     "unknown": "Unknown",
 }
 
-# Packet Express platform rules first; Meraki product families after.
+# Platform rules first; Meraki product families after.
 # First match wins.
 _PLATFORM_RULES: list[tuple[DeviceClass, re.Pattern[str]]] = [
     ("core", re.compile(r"c9500", re.I)),
@@ -76,7 +76,7 @@ def classify_device(
     managed: bool = True,
     is_core_switch: bool = False,
 ) -> DeviceClass:
-    """Classify a node using Packet Express rules, extended for Meraki families."""
+    """Classify a node using platform rules, extended for Meraki families."""
     host = _txt(hostname)
     plat = _txt(platform)
     product = _txt(product_type).lower()
@@ -122,7 +122,7 @@ def classify_device(
 
 
 def elect_core_switch_ids(nodes: list[dict[str, Any]], degree: dict[str, int]) -> set[str]:
-    """Choose core switches the way Packet Express prefers C9500, generalized for MS."""
+    """Choose core switches preferring Catalyst-class platforms, generalized for MS."""
     switch_ids: list[str] = []
     forced: set[str] = set()
     for node in nodes:

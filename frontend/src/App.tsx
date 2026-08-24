@@ -514,7 +514,7 @@ export function App() {
           emptySub={
             loading
               ? "Fetching devices, LLDP/CDP links, ports and clients from Meraki."
-              : "Connect a Meraki API key and choose an organization + network, or load the sample topology to preview the physical Packet Express map."
+              : "Connect a Meraki API key and choose an organization + network, or load the sample topology to preview the physical map."
           }
           changes={changes}
           onRequestSaveView={() => setDialog("view")}
@@ -549,8 +549,6 @@ export function App() {
         <span>
           Meraki Ops <b>v1.2</b>
         </span>
-        <span className="ft-sep">·</span>
-        <span>Packet Express topology</span>
       </footer>
       <RemediationModal action={pendingAction} onConfirm={applyAction} onClose={() => setPendingAction(undefined)} />
       <TopologyDebugPanel graph={graph} open={topoDebugOpen} onClose={() => setTopoDebugOpen(false)} />
